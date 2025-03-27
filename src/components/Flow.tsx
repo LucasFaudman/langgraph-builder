@@ -26,6 +26,7 @@ import GenericModal from './GenericModal'
 import { ColorEditingProvider } from './edges/SelfConnectingEdge'
 import JSZip from 'jszip'
 import TemplatesPanel, { type Template } from './ui/TemplatesPanel'
+import yaml from 'js-yaml'
 
 // Loading spinner component
 const LoadingSpinner = () => (
@@ -69,6 +70,40 @@ type TooltipPlacement =
   | 'top-end'
   | 'top-start'
 
+type YamlNode = {
+  name: string;
+}
+
+type YamlEdge = {
+  from: string;
+  to?: string;
+  condition?: string;
+  paths?: string[];
+}
+
+type YamlConfig = {
+  name: string;
+  builder_name: string;
+  compiled_name: string;
+  config: string;
+  state: string;
+  input: string;
+  output: string;
+  implementation: string;
+  nodes: YamlNode[];
+  edges: YamlEdge[];
+}
+
+function parseYamlSpec(yamlContent: string) {
+  try {
+    const parsed = yaml.load(yamlContent) as YamlConfig;
+    return parsed;
+  } catch (e) {
+    console.error('Failed to parse YAML:', e);
+    return null;
+  }
+}
+
 export default function App() {
   const proOptions = { hideAttribution: true }
   const [nodes, setNodes, onNodesChange] = useNodesState<CustomNodeType>(initialNodes)
@@ -97,6 +132,17 @@ export default function App() {
   const [isMobile, setIsMobile] = useState(false)
   const [generatedYamlSpec, setGeneratedYamlSpec] = useState<string>('')
   const [isTemplatesPanelOpen, setIsTemplatesPanelOpen] = useState(false)
+  const [isConfigModalOpen, setIsConfigModalOpen] = useState(false)
+  const [configValues, setConfigValues] = useState({
+    name: 'CustomAgent',
+    builder_name: 'builder',
+    compiled_name: 'graph',
+    config: 'config.Configuration',
+    state: 'state.State',
+    input: 'state.InputState',
+    output: 'Any',
+    implementation: 'implementation.IMPLEMENTATION'
+  })
 
   const nodesRef = useRef(nodes)
   const edgesRef = useRef(edges)
@@ -114,10 +160,7 @@ export default function App() {
   }, [])
 
   const MockColorPicker = () => (
-    <div
-      className={`fixed bottom-5 cursor-disabled left-5 z-50 ${!initialOnboardingComplete ? 'cursor-not-allowed' : ''}`}
-      style={{ width: '280px' }}
-    >
+    <div className={`fixed bottom-5 cursor-disabled left-5 z-50 ${!initialOnboardingComplete ? 'cursor-not-allowed' : ''}`} style={{ width: '280px' }}>
       <div className='flex flex-col gap-3 bg-white p-4 rounded-lg shadow-xl'>
         <div className='flex justify-between items-center'>
           <span className='text-sm font-semibold text-gray-800'>Set edge color</span>
@@ -700,8 +743,8 @@ export default function App() {
     })
 
     // Step 4: Build YAML structure with special handling for source/end connections
-    const yaml = {
-      name: 'CustomAgent',
+    const yaml: YamlConfig = {
+      ...configValues,
       nodes: Array.from(nodeNames).map((name) => ({ name })),
       edges: [
         // Handle source node connections (convert to __start__)
@@ -715,7 +758,7 @@ export default function App() {
             return {
               from: '__start__',
               to: targetNode?.data?.label || '',
-            }
+            } as YamlEdge
           }),
 
         // Handle end node connections (convert to __end__)
@@ -729,7 +772,7 @@ export default function App() {
             return {
               from: sourceNode?.data?.label || '',
               to: '__end__',
-            }
+            } as YamlEdge
           }),
 
         // Handle normal edges between custom nodes
@@ -745,7 +788,7 @@ export default function App() {
             return {
               from: sourceNode?.data?.label || '',
               to: targetNode?.data?.label || '',
-            }
+            } as YamlEdge
           }),
 
         // Handle conditional edges
@@ -761,7 +804,7 @@ export default function App() {
               // If target is the end node, use __end__ instead
               return targetNode?.type === 'end' ? '__end__' : targetNode?.data?.label || ''
             }),
-          }
+          } as YamlEdge
         }),
       ],
     }
@@ -769,25 +812,27 @@ export default function App() {
     // Convert to YAML string
     const yamlString = Object.entries(yaml)
       .map(([key, value]) => {
-        if (key === 'nodes') {
-          // @ts-ignore
-          return `${key}:\n${value.map((node: any) => `  - name: ${node.name}`).join('\n')}`
+        if (key === 'nodes' && Array.isArray(value)) {
+          const nodes = value as YamlNode[]
+          return `${key}:\n${nodes.map((node) => `  - name: ${node.name}`).join('\n')}`
         }
-        if (key === 'edges') {
-          return `${key}:\n${value
-            // @ts-ignore
-            .map((edge: any) => {
+        if (key === 'edges' && Array.isArray(value)) {
+          const edges = value as YamlEdge[]
+          return `${key}:\n${edges
+            .map((edge) => {
               if ('condition' in edge) {
-                return `  - from: ${edge.from}\n    condition: ${edge.condition}\n    paths: [${edge.paths.join(', ')}]`
+                return `  - from: ${edge.from}\n    condition: ${edge.condition}\n    paths: [${edge.paths?.join(', ')}]`
               }
               return `  - from: ${edge.from}\n    to: ${edge.to}`
             })
             .join('\n')}`
         }
+        if (key === 'name') {
+          return `name: ${value}`
+        }
         return `${key}: ${value}`
       })
       .join('\n')
-    console.log(yamlString, 'yaml string')
 
     // Add descriptive comment at the top
     const fileExt = currentLanguage === 'python' ? '.py' : '.ts'
@@ -870,6 +915,18 @@ export default function App() {
 
   const handleGenerateCode = () => {
     generateCodeWithLanguage('python')
+  }
+
+  const downloadFile = (content: string, filename: string) => {
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
   }
 
   const activeCode = activeFile === 'spec' ? generatedYamlSpec : generatedFiles[language]?.[activeFile] || ''
@@ -994,6 +1051,61 @@ export default function App() {
     setIsTemplatesPanelOpen(false)
   }
 
+  // Configuration Modal Component
+  const ConfigModal = () => {
+    const [localConfigValues, setLocalConfigValues] = useState(configValues)
+
+    const handleInputChange = (key: string, value: string) => {
+      setLocalConfigValues(prev => ({ ...prev, [key]: value }))
+    }
+
+    const handleClose = () => {
+      setConfigValues(localConfigValues)
+      setIsConfigModalOpen(false)
+    }
+
+    return (
+      <MuiModal
+        hideBackdrop={true}
+        onClose={handleClose}
+        onClick={(e: React.MouseEvent) => {
+          if (e.target === e.currentTarget) {
+            handleClose()
+          }
+        }}
+        open={isConfigModalOpen}
+      >
+        <ModalDialog className='bg-slate-150 hidden sm:block absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2'>
+          <div className='flex flex-col gap-4'>
+            <div className='flex justify-between items-center'>
+              <h2 className='text-lg font-medium'>Configuration</h2>
+              <button
+                className='font-bold text-gray-400 hover:text-gray-600 transition-colors duration-300 ease-in-out'
+                onClick={handleClose}
+              >
+                <X size={25} />
+              </button>
+            </div>
+            <div className='flex flex-col gap-4'>
+              {Object.entries(localConfigValues).map(([key, value]) => (
+                <div key={key} className='flex flex-col gap-1'>
+                  <label className='text-sm font-medium text-gray-700'>{key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</label>
+                  <input
+                    type='text'
+                    value={value}
+                    onChange={(e) => handleInputChange(key, e.target.value)}
+                    className='px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#2F6868] focus:border-transparent'
+                    autoComplete="off"
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        </ModalDialog>
+      </MuiModal>
+    )
+  }
+
   return (
     <div className='w-screen h-screen'>
       <div className='absolute top-5 left-5 z-50 flex gap-2'>
@@ -1021,6 +1133,112 @@ export default function App() {
           </svg>
           Templates
         </button>
+
+        <label
+          className={`flex items-center gap-2 px-3 py-2 bg-white rounded-lg shadow-md transition-shadow cursor-pointer ${
+            !initialOnboardingComplete ? 'cursor-not-allowed opacity-70' : 'hover:shadow-lg'
+          }`}
+        >
+          <input
+            type="file"
+            accept=".yml,.yaml"
+            className="hidden"
+            onChange={(e) => {
+              if (!e.target.files?.length) return;
+              const file = e.target.files[0];
+              const reader = new FileReader();
+              reader.onload = (event) => {
+                if (!event.target?.result) return;
+                const content = event.target.result as string;
+                const parsed = parseYamlSpec(content);
+                if (!parsed) {
+                  alert('Failed to parse YAML file');
+                  return;
+                }
+                
+                // Update configuration values
+                setConfigValues({
+                  name: parsed.name || 'CustomAgent',
+                  builder_name: parsed.builder_name || 'builder',
+                  compiled_name: parsed.compiled_name || 'graph',
+                  config: parsed.config || 'config.Configuration',
+                  state: parsed.state || 'state.State',
+                  input: parsed.input || 'state.InputState',
+                  output: parsed.output || 'Any',
+                  implementation: parsed.implementation || 'implementation.IMPLEMENTATION'
+                });
+
+                // Create nodes from the YAML
+                const newNodes = [
+                  // Add source and end nodes
+                  { id: 'source', type: 'source', position: { x: 0, y: 0 }, data: { label: 'source' } },
+                  { id: 'end', type: 'end', position: { x: 0, y: 600 }, data: { label: 'end' } },
+                  // Add custom nodes
+                  ...parsed.nodes.map((node, index) => ({
+                    id: `node-${index}`,
+                    type: 'custom',
+                    position: { x: 200, y: 200 + (index * 100) },
+                    data: { label: node.name }
+                  }))
+                ];
+
+                // Create edges from the YAML
+                const newEdges = parsed.edges.map((edge, index) => {
+                  if ('condition' in edge && edge.paths) {
+                    // Handle conditional edges
+                    return edge.paths.map((path, pathIndex) => ({
+                      id: `edge-${index}-${pathIndex}`,
+                      source: edge.from === '__start__' ? 'source' : 
+                              edge.from === '__end__' ? 'end' : 
+                              newNodes.find(n => n.data.label === edge.from)?.id || '',
+                      target: path === '__start__' ? 'source' : 
+                              path === '__end__' ? 'end' : 
+                              newNodes.find(n => n.data.label === path)?.id || '',
+                      animated: true,
+                      type: 'self-connecting-edge',
+                      label: edge.condition,
+                      markerEnd: { type: MarkerType.ArrowClosed }
+                    }));
+                  } else {
+                    // Handle normal edges
+                    return {
+                      id: `edge-${index}`,
+                      source: edge.from === '__start__' ? 'source' : 
+                              edge.from === '__end__' ? 'end' : 
+                              newNodes.find(n => n.data.label === edge.from)?.id || '',
+                      target: edge.to === '__start__' ? 'source' : 
+                              edge.to === '__end__' ? 'end' : 
+                              newNodes.find(n => n.data.label === edge.to)?.id || '',
+                      type: 'self-connecting-edge',
+                      markerEnd: { type: MarkerType.ArrowClosed }
+                    };
+                  }
+                }).flat();
+
+                // Update the graph
+                setNodes(newNodes);
+                setEdges(newEdges);
+              };
+              reader.readAsText(file);
+            }}
+          />
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="17 8 12 3 7 8" />
+            <line x1="12" y1="3" x2="12" y2="15" />
+          </svg>
+          Load Spec
+        </label>
       </div>
       <div className='absolute top-5 right-5 z-50 flex gap-2'>
         <div className='flex flex-row gap-2'>
@@ -1047,6 +1265,29 @@ export default function App() {
               <div className='text-[#333333] font-medium text-center text-slate-100'> {'Generate Code'}</div>
             </button>
           </Tooltip>
+          <button
+            disabled={!initialOnboardingComplete}
+            className={`p-3 rounded-md shadow-lg border border-[#2F6868] text-[#2F6868] focus:outline-none ${
+              !initialOnboardingComplete ? 'cursor-not-allowed' : ''
+            }`}
+            aria-label='Open Configuration'
+            onClick={() => setIsConfigModalOpen(true)}
+          >
+            <svg
+              xmlns='http://www.w3.org/2000/svg'
+              width='24'
+              height='24'
+              viewBox='0 0 24 24'
+              fill='none'
+              stroke='currentColor'
+              strokeWidth='2'
+              strokeLinecap='round'
+              strokeLinejoin='round'
+            >
+              <circle cx='12' cy='12' r='3'></circle>
+              <path d='M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z'></path>
+            </svg>
+          </button>
           <button
             disabled={!initialOnboardingComplete}
             className={`p-3 rounded-md shadow-lg border border-[#2F6868] text-[#2F6868] focus:outline-none ${
@@ -1317,13 +1558,22 @@ export default function App() {
                           </button>
                         </div>
                         <div className='relative bg-gray-100 overflow-hidden h-[calc(80vh-30px)]'>
-                          <button
-                            onClick={copyActiveCode}
-                            className='absolute top-5 right-6 z-10 p-1 bg-white rounded border border-gray-300 hover:bg-gray-50'
-                            title='Copy code to clipboard'
-                          >
-                            {justCopied ? <Check size={18} /> : <Copy size={18} />}
-                          </button>
+                          <div className='absolute top-5 right-6 z-10 flex gap-2'>
+                            <button
+                              onClick={() => downloadFile(activeCode, activeFile === 'spec' ? 'spec.yml' : `${activeFile}${fileExtension}`)}
+                              className='p-1 bg-white rounded border border-gray-300 hover:bg-gray-50'
+                              title='Download file'
+                            >
+                              <Download size={18} />
+                            </button>
+                            <button
+                              onClick={copyActiveCode}
+                              className='p-1 bg-white rounded border border-gray-300 hover:bg-gray-50'
+                              title='Copy code to clipboard'
+                            >
+                              {justCopied ? <Check size={18} /> : <Copy size={18} />}
+                            </button>
+                          </div>
                           <Highlight
                             theme={themes.nightOwl}
                             code={activeCode}
@@ -1359,6 +1609,7 @@ export default function App() {
           </MuiModal>
         </div>
       </div>
+      <ConfigModal />
     </div>
   )
 }
