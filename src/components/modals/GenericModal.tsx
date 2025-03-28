@@ -82,4 +82,4 @@ const GenericModal: React.FC<GenericModalProps> = ({
   )
 }
 
-export default GenericModal
+export default GenericModal 

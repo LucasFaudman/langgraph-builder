@@ -52,18 +52,35 @@ export default function CustomNode({ data, id, selected }: NodeProps<CustomNode>
 
   const adjustNodeSize = useCallback(() => {
     if (inputRef.current) {
-      const textWidth = inputRef.current.scrollWidth
-      const newWidth = Math.max(150, textWidth)
-      setNodeWidth(newWidth)
+      // Create a temporary span to measure text width more accurately
+      const tempSpan = document.createElement('span');
+      tempSpan.style.visibility = 'hidden';
+      tempSpan.style.position = 'absolute';
+      tempSpan.style.whiteSpace = 'nowrap';
+      tempSpan.style.fontSize = window.getComputedStyle(inputRef.current).fontSize;
+      tempSpan.style.fontFamily = window.getComputedStyle(inputRef.current).fontFamily;
+      tempSpan.innerText = inputRef.current.value || '';
+      document.body.appendChild(tempSpan);
+      
+      // Get the accurate width and add padding
+      const textWidth = tempSpan.getBoundingClientRect().width;
+      document.body.removeChild(tempSpan);
+      
+      // Set a minimum width and add extra padding (30px) to ensure text isn't cut off
+      const newWidth = Math.max(150, textWidth + 30);
+      console.log('Adjusting node size:', { text: inputRef.current.value, textWidth, newWidth });
+      setNodeWidth(newWidth);
     }
   }, [])
 
   useEffect(() => {
-    updateButtonText(id, data.label)
+    updateButtonText(id, data.label);
+    // Initial size adjustment
+    setTimeout(adjustNodeSize, 0);
   }, [])
 
   useEffect(() => {
-    adjustNodeSize()
+    adjustNodeSize();
   }, [buttonTexts[id], adjustNodeSize])
 
   return (
@@ -75,19 +92,25 @@ export default function CustomNode({ data, id, selected }: NodeProps<CustomNode>
           backgroundColor: randomBackgroundColor,
           width: `${nodeWidth}px`,
           boxShadow: selected ? '0 0 12px rgba(0, 0, 0, 0.3)' : 'none',
+          transition: 'width 0.1s ease-out',
         }}
       >
         <input
           ref={inputRef}
           type='text'
-          className='w-full outline-none rounded-md text-center p-0 text-white'
+          className='w-full outline-none rounded-md text-center p-1 text-black'
           value={buttonTexts[id]}
           onChange={handleInputChange}
           style={{
             backgroundColor: 'transparent',
             color: '#333333',
             width: '100%',
+            minWidth: '100%',
+            border: 'none',
+            textOverflow: 'ellipsis',
           }}
+          onBlur={adjustNodeSize}
+          onFocus={adjustNodeSize}
         />
         <Handle
           type='source'

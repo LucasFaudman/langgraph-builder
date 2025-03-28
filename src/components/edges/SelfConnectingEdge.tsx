@@ -114,12 +114,35 @@ export default function SelfConnectingEdge(props: SelfConnectingEdgeProps) {
       measureRef.current.textContent = textToMeasure
       const width = measureRef.current.offsetWidth
       setLabelWidth(width + 30)
+      console.log('SelfConnectingEdge label measurement:', { 
+        id,
+        source,
+        contextLabel: edgeLabels[source],
+        propsLabel: label,
+        finalText: textToMeasure
+      });
     }
-  }, [edgeLabels[source], label, source])
+  }, [edgeLabels[source], label, source, id])
 
   useEffect(() => {
-    setCurrentLabel(edgeLabels[source])
-  }, [edgeLabels, source])
+    // If there's a label in props but not in context, update the context
+    if (label && !edgeLabels[source] && source) {
+      console.log('Initializing edge label in context from props:', {
+        source,
+        label
+      });
+      updateEdgeLabel(source, String(label));
+    }
+    
+    setCurrentLabel(edgeLabels[source] || (label ? String(label) : ''));
+    console.log('SelfConnectingEdge updating current label:', {
+      id,
+      source,
+      contextLabel: edgeLabels[source],
+      propsLabel: label,
+      finalLabel: edgeLabels[source] || (label ? String(label) : '')
+    });
+  }, [edgeLabels, source, id, label, updateEdgeLabel])
 
   const handleSvgClick = () => {
     setActiveEdgeId(id)
@@ -310,7 +333,7 @@ export default function SelfConnectingEdge(props: SelfConnectingEdgeProps) {
                     ref={labelRef}
                     className='whitespace-nowrap text-center transition-all duration-500 ease-in-out min-w-[25px]'
                   >
-                    {edgeLabels[source] || label || ' '}
+                    {edgeLabels[source] || (label ? String(label) : ' ')}
                   </span>
                 </div>
               </foreignObject>
@@ -426,7 +449,7 @@ export default function SelfConnectingEdge(props: SelfConnectingEdgeProps) {
                   ref={labelRef}
                   className='whitespace-nowrap text-center transition-all duration-500 ease-in-out min-w-[25px]'
                 >
-                  {edgeLabels[source] || label || ' '}
+                  {edgeLabels[source] || (label ? String(label) : ' ')}
                 </span>
               </div>
             </foreignObject>

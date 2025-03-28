@@ -22,12 +22,18 @@ import { Modal as MuiModal, ModalDialog, Tooltip, Snackbar } from '@mui/joy'
 import { X, Copy, Info, Check, Download, Settings } from 'lucide-react'
 import { Highlight, themes } from 'prism-react-renderer'
 import MultiButton from './ui/multibutton'
-import GenericModal from './GenericModal'
+import { ConfigModal, GraphConfigModal, ServerConfigModal, CodeTemplateConfig, GenericModal, KeyCommandsModal } from './modals'
 import { ColorEditingProvider } from './edges/SelfConnectingEdge'
-import JSZip from 'jszip'
 import TemplatesPanel, { type Template } from './ui/TemplatesPanel'
-import yaml from 'js-yaml'
-import ConfigModal from './ConfigModal'
+import { parseYamlSpec, generateSpec, type YamlConfig, type YamlNode, type YamlEdge } from '@/utils/yamlUtils'
+import { downloadFile, downloadAsZip, type GeneratedFiles } from '@/utils/downloadUtils'
+// Import onboarding components from the new file
+import { 
+  OnboardingContent, 
+  MockColorPicker, 
+  getOnboardingSteps, 
+  type OnboardingStep
+} from './onboarding'
 
 // Loading spinner component
 const LoadingSpinner = () => (
@@ -35,75 +41,6 @@ const LoadingSpinner = () => (
     <div className='w-12 h-12 border-4 border-[#2F6868] border-t-transparent rounded-full animate-spin'></div>
   </div>
 )
-
-type OnboardingStep = {
-  key: string
-  type: 'modal' | 'tooltip'
-  title?: string
-  content: string | JSX.Element
-  buttonText?: string
-  imageUrl?: string
-  placement?: TooltipPlacement
-  targetNodeId?: string
-  tooltipOffset?: { x: number; y: number }
-  nodes?: Node[]
-  edges?: Edge[]
-  position?: {
-    top?: string
-    right?: string
-    bottom?: string
-    left?: string
-  }
-  className?: string
-}
-
-type TooltipPlacement =
-  | 'top'
-  | 'left'
-  | 'bottom'
-  | 'right'
-  | 'bottom-end'
-  | 'bottom-start'
-  | 'left-end'
-  | 'left-start'
-  | 'right-end'
-  | 'right-start'
-  | 'top-end'
-  | 'top-start'
-
-type YamlNode = {
-  name: string;
-}
-
-type YamlEdge = {
-  from: string;
-  to?: string;
-  condition?: string;
-  paths?: string[];
-}
-
-type YamlConfig = {
-  name: string;
-  builder_name: string;
-  compiled_name: string;
-  config: string;
-  state: string;
-  input: string;
-  output: string;
-  implementation: string;
-  nodes: YamlNode[];
-  edges: YamlEdge[];
-}
-
-function parseYamlSpec(yamlContent: string) {
-  try {
-    const parsed = yaml.load(yamlContent) as YamlConfig;
-    return parsed;
-  } catch (e) {
-    console.error('Failed to parse YAML:', e);
-    return null;
-  }
-}
 
 export default function App() {
   const proOptions = { hideAttribution: true }
@@ -114,17 +51,13 @@ export default function App() {
   const reactFlowWrapper = useRef<any>(null)
   const [reactFlowInstance, setReactFlowInstance] = useState<any>(null)
   const [isConnecting, setIsConnecting] = useState(false)
-  const { buttonTexts } = useButtonText()
+  const { buttonTexts, updateButtonText } = useButtonText()
   const [maxNodeLength, setMaxNodeLength] = useState(0)
   const [maxEdgeLength, setMaxEdgeLength] = useState(0)
   const [conditionalGroupCount, setConditionalGroupCount] = useState(0)
   const { edgeLabels, updateEdgeLabel } = useEdgeLabel()
-  const [activeFile, setActiveFile] = useState<'stub' | 'implementation' | 'spec'>('stub')
-  const [generatedFiles, setGeneratedFiles] = useState<{
-    python?: { stub?: string; implementation?: string }
-    typescript?: { stub?: string; implementation?: string }
-  }>({})
-  const [language, setLanguage] = useState<'python' | 'typescript'>('python')
+  const [activeFile, setActiveFile] = useState<'stub' | 'implementation' | 'spec' | 'graph' | 'state' | 'config'>('stub')
+  const [generatedFiles, setGeneratedFiles] = useState<GeneratedFiles>({})
   const [initialOnboardingComplete, setInitialOnboardingComplete] = useState<boolean | null>(null)
   const [currentOnboardingStep, setCurrentOnboardingStep] = useState(0)
   const [isLoading, setIsLoading] = useState(false)
@@ -135,7 +68,8 @@ export default function App() {
   const [isTemplatesPanelOpen, setIsTemplatesPanelOpen] = useState(false)
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false)
   const [isServerConfigModalOpen, setIsServerConfigModalOpen] = useState(false)
-  const [serverUrl, setServerUrl] = useState('https://langgraph-gen-server-570601939772.us-central1.run.app/generate')
+  const [isTemplateConfigModalOpen, setIsTemplateConfigModalOpen] = useState(false)
+  const [serverUrl, setServerUrl] = useState<string>('https://langgraph-gen-server-570601939772.us-central1.run.app')
   const [configValues, setConfigValues] = useState({
     name: 'CustomAgent',
     builder_name: 'builder',
@@ -144,11 +78,176 @@ export default function App() {
     state: 'state.State',
     input: 'state.InputState',
     output: 'Any',
-    implementation: 'implementation.IMPLEMENTATION'
+    implementation: 'implementation.IMPLEMENTATION',
+    language: 'python' as 'python' | 'typescript'
   })
+  const [skipTemplates, setSkipTemplates] = useState<string[]>([])
+  const [availableTemplates, setAvailableTemplates] = useState<{
+    python: { [key: string]: string[] },
+    typescript: { [key: string]: string[] }
+  }>({
+    python: {},
+    typescript: {}
+  })
+  const [isLoadingTemplates, setIsLoadingTemplates] = useState(false)
+  const [templateError, setTemplateError] = useState<string | null>(null)
+  const [customTemplates, setCustomTemplates] = useState<{[key: string]: string}>({})
 
   const nodesRef = useRef(nodes)
   const edgesRef = useRef(edges)
+
+  // Load config values from localStorage on mount
+  useEffect(() => {
+    try {
+      // Load server URL
+      const savedServerUrl = localStorage.getItem('lg-builder-server-url');
+      if (savedServerUrl) {
+        setServerUrl(savedServerUrl);
+      }
+
+      // Load skip templates
+      const savedSkipTemplates = localStorage.getItem('lg-builder-skip-templates');
+      if (savedSkipTemplates) {
+        setSkipTemplates(JSON.parse(savedSkipTemplates));
+      }
+
+      // Load custom templates
+      const savedCustomTemplates = localStorage.getItem('lg-builder-custom-templates');
+      if (savedCustomTemplates) {
+        setCustomTemplates(JSON.parse(savedCustomTemplates));
+      }
+
+      // Load language preference
+      const savedLanguage = localStorage.getItem('lg-builder-language');
+      if (savedLanguage && (savedLanguage === 'python' || savedLanguage === 'typescript')) {
+        setConfigValues(prev => ({
+          ...prev,
+          language: savedLanguage as 'python' | 'typescript'
+        }));
+      }
+
+      // Load graph configuration
+      const savedGraphConfig = localStorage.getItem('lg-builder-graph-config');
+      if (savedGraphConfig) {
+        try {
+          const parsedConfig = JSON.parse(savedGraphConfig);
+          setConfigValues(prev => ({
+            ...prev,
+            name: parsedConfig.name || prev.name,
+            builder_name: parsedConfig.builder_name || prev.builder_name,
+            compiled_name: parsedConfig.compiled_name || prev.compiled_name,
+            config: parsedConfig.config || prev.config,
+            state: parsedConfig.state || prev.state,
+            input: parsedConfig.input || prev.input,
+            output: parsedConfig.output || prev.output,
+            implementation: parsedConfig.implementation || prev.implementation
+          }));
+        } catch (e) {
+          console.error('Error parsing saved graph config:', e);
+        }
+      }
+    } catch (error) {
+      console.error('Error loading settings from localStorage:', error);
+    }
+  }, []);
+
+  // Custom wrapper functions to update both state and localStorage
+  const updateServerUrl = (url: string) => {
+    setServerUrl(url);
+    localStorage.setItem('lg-builder-server-url', url);
+  };
+
+  const updateSkipTemplates = (templates: string[]) => {
+    setSkipTemplates(templates);
+    localStorage.setItem('lg-builder-skip-templates', JSON.stringify(templates));
+  };
+
+  const updateCustomTemplates = (templates: {[key: string]: string}) => {
+    setCustomTemplates(templates);
+    localStorage.setItem('lg-builder-custom-templates', JSON.stringify(templates));
+  };
+
+  const updateLanguage = (lang: 'python' | 'typescript') => {
+    setConfigValues(prev => ({
+      ...prev,
+      language: lang
+    }));
+    localStorage.setItem('lg-builder-language', lang);
+  };
+
+  // Function to fetch available templates from the server
+  const fetchTemplates = async (baseUrl: string) => {
+    setIsLoadingTemplates(true)
+    setTemplateError(null)
+    try {
+      const response = await fetch('/api/get-templates', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          serverUrl: baseUrl
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch templates: ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      
+      if (data.error) {
+        throw new Error(data.error);
+      }
+      
+      if (!data.templates || !Array.isArray(data.templates) || data.templates.length === 0) {
+        setTemplateError("No templates returned from server");
+        setAvailableTemplates({
+          python: {},
+          typescript: {}
+        });
+        return;
+      }
+      
+      // Organize templates by language and template type
+      const templates: {
+        python: { [key: string]: string[] },
+        typescript: { [key: string]: string[] }
+      } = {
+        python: {},
+        typescript: {}
+      };
+      
+      data.templates.forEach((template: { language: 'python' | 'typescript', template_type: string, name: string }) => {
+        const { language, template_type, name } = template;
+        if (!templates[language]) {
+          templates[language] = {};
+        }
+        if (!templates[language][template_type]) {
+          templates[language][template_type] = [];
+        }
+        templates[language][template_type].push(name);
+      });
+      
+      setAvailableTemplates(templates);
+    } catch (error) {
+      console.error('Error fetching templates:', error);
+      setTemplateError(error instanceof Error ? error.message : 'Unknown error');
+      setAvailableTemplates({
+        python: {},
+        typescript: {}
+      });
+    } finally {
+      setIsLoadingTemplates(false);
+    }
+  };
+
+  // Fetch templates when the server URL changes
+  useEffect(() => {
+    if (serverUrl) {
+      fetchTemplates(serverUrl);
+    }
+  }, [serverUrl]);
 
   useEffect(() => {
     const checkMobile = () => {
@@ -161,30 +260,6 @@ export default function App() {
 
     return () => window.removeEventListener('resize', checkMobile)
   }, [])
-
-  const MockColorPicker = () => (
-    <div className={`fixed bottom-5 cursor-disabled left-5 z-50 ${!initialOnboardingComplete ? 'cursor-not-allowed' : ''}`} style={{ width: '280px' }}>
-      <div className='flex flex-col gap-3 bg-white p-4 rounded-lg shadow-xl'>
-        <div className='flex justify-between items-center'>
-          <span className='text-sm font-semibold text-gray-800'>Set edge color</span>
-          <button
-            disabled
-            className='text-sm cursor-not-allowed bg-slate-800 hover:bg-slate-900 text-slate-100 py-1 px-2 rounded-md'
-          >
-            Done
-          </button>
-        </div>
-        <div className='relative'>
-          <div className='relative cursor-not-allowed w-full h-[80px] rounded-lg shadow-md ring-1 ring-gray-200 bg-gray-100'></div>
-          <div className='mt-2 flex justify-center'>
-            <div className='bg-gray-100 px-3 py-1 rounded-full'>
-              <code className='text-sm font-mono text-gray-700'>#BDBDBD</code>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
 
   const hasValidSourceToEndPath = useCallback(() => {
     if (!edges.length) return false
@@ -203,339 +278,204 @@ export default function App() {
   useEffect(() => {
     nodesRef.current = nodes
     edgesRef.current = edges
-  }, [nodes, edges])
+    
+    // Save the current graph to localStorage when nodes or edges change
+    if (initialOnboardingComplete && nodes.length > 0) {
+      try {
+        const yaml = generateSpec(edges, nodes, configValues as YamlConfig);
+        localStorage.setItem('lg-builder-yaml-spec', yaml);
+      } catch (error) {
+        console.error('Error saving graph to localStorage:', error);
+      }
+    }
+  }, [nodes, edges, configValues, initialOnboardingComplete])
 
   useEffect(() => {
     const initialComplete = localStorage.getItem('initialOnboardingComplete')
     setInitialOnboardingComplete(initialComplete === 'true' ? true : false)
+    
+    // Load saved graph from localStorage if onboarding is complete
+    if (initialComplete === 'true') {
+      try {
+        const savedYaml = localStorage.getItem('lg-builder-yaml-spec');
+        if (savedYaml) {
+          // Parse the YAML and recreate the graph
+          const parsed = parseYamlSpec(savedYaml);
+          if (parsed) {
+            setGeneratedYamlSpec(savedYaml);
+            
+            // Update configuration values if present in the YAML
+            if (parsed.name || parsed.builder_name || parsed.compiled_name || 
+                parsed.config || parsed.state || parsed.input || 
+                parsed.output || parsed.implementation || parsed.language) {
+              
+              const newConfig = {
+                ...configValues,
+                name: parsed.name || configValues.name,
+                builder_name: parsed.builder_name || configValues.builder_name,
+                compiled_name: parsed.compiled_name || configValues.compiled_name,
+                config: parsed.config || configValues.config,
+                state: parsed.state || configValues.state,
+                input: parsed.input || configValues.input,
+                output: parsed.output || configValues.output,
+                implementation: parsed.implementation || configValues.implementation
+              };
+              
+              if (parsed.language && (parsed.language === 'python' || parsed.language === 'typescript')) {
+                newConfig.language = parsed.language;
+              }
+              
+              setConfigValues(newConfig);
+              
+              // Save to localStorage
+              localStorage.setItem('lg-builder-graph-config', JSON.stringify({
+                name: newConfig.name,
+                builder_name: newConfig.builder_name,
+                compiled_name: newConfig.compiled_name,
+                config: newConfig.config,
+                state: newConfig.state,
+                input: newConfig.input,
+                output: newConfig.output,
+                implementation: newConfig.implementation
+              }));
+              
+              if (parsed.language && (parsed.language === 'python' || parsed.language === 'typescript')) {
+                localStorage.setItem('lg-builder-language', parsed.language);
+              }
+            }
+            
+            // Create nodes from the YAML
+            const newNodes = [
+              // Add source and end nodes
+              { id: 'source', type: 'source', position: { x: 0, y: 0 }, data: { label: 'source' } },
+              { id: 'end', type: 'end', position: { x: 0, y: 600 }, data: { label: 'end' } },
+              // Add custom nodes with evenly spaced positions
+              ...parsed.nodes.map((node: YamlNode, index: number) => {
+                // Calculate vertical spacing between nodes
+                const totalHeight = 500; // Height between source and end nodes
+                const numNodes = parsed.nodes.length;
+                const spacing = totalHeight / (numNodes + 1);
+                const yPosition = spacing * (index + 1) + 50; // Add 50px offset from source node
+                
+                // Alternate between left and right side for better visualization
+                const xOffset = index % 2 === 0 ? -200 : 200;
+                
+                // Initialize button text for this node
+                const nodeId = `node-${index + 1}`;
+                updateButtonText(nodeId, node.name);
+                
+                return {
+                  id: nodeId, // Use consistent ID format
+                  type: 'custom',
+                  position: { x: xOffset, y: yPosition },
+                  data: { label: node.name }
+                };
+              })
+            ];
+
+            // Update maxNodeLength based on the number of loaded nodes
+            setMaxNodeLength(parsed.nodes.length);
+
+            // Create edges from the YAML
+            const newEdges: Edge[] = [];
+            
+            // Process each edge from the YAML
+            parsed.edges.forEach((edge: YamlEdge, index: number) => {
+              if ('condition' in edge && edge.paths) {
+                // Handle conditional edges
+                const sourceNode = newNodes.find(n => n.data.label === edge.from);
+                const sourceId = edge.from === '__start__' ? 'source' : 
+                               edge.from === '__end__' ? 'end' : 
+                               sourceNode?.id || '';
+                               
+                edge.paths.forEach((path, pathIndex) => {
+                  const targetNode = newNodes.find(n => n.data.label === path);
+                  const targetId = path === '__start__' ? 'source' : 
+                                 path === '__end__' ? 'end' : 
+                                 targetNode?.id || 'end';
+                  
+                  newEdges.push({
+                    id: `edge-${index}-${pathIndex}`,
+                    source: sourceId,
+                    target: targetId,
+                    animated: true,
+                    type: 'self-connecting-edge',
+                    label: edge.condition,
+                    markerEnd: { type: MarkerType.ArrowClosed },
+                    data: {
+                      text: edge.condition || '',
+                      edgeId: `edge-${index}-${pathIndex}`,
+                      onEdgeLabelChange: (id: string, text: string) => {
+                        updateEdgeLabel(id, text);
+                      },
+                      isConditional: true,
+                      onEdgeUnselect: handleEdgeUnselect
+                    }
+                  });
+                  
+                  // Update the edge label context
+                  if (edge.condition && sourceId) {
+                    updateEdgeLabel(sourceId, edge.condition);
+                  }
+                });
+              } else {
+                // Handle normal edges
+                const sourceNode = newNodes.find(n => n.data.label === edge.from);
+                const targetNode = newNodes.find(n => n.data.label === edge.to);
+                const sourceId = edge.from === '__start__' ? 'source' : 
+                               edge.from === '__end__' ? 'end' : 
+                               sourceNode?.id || '';
+                const targetId = edge.to === '__start__' ? 'source' : 
+                               edge.to === '__end__' ? 'end' : 
+                               targetNode?.id || 'end';
+                
+                newEdges.push({
+                  id: `edge-${index}`,
+                  source: sourceId,
+                  target: targetId,
+                  type: 'self-connecting-edge',
+                  markerEnd: { type: MarkerType.ArrowClosed },
+                  data: {
+                    text: '',
+                    edgeId: `edge-${index}`,
+                    onEdgeLabelChange: (id: string, text: string) => {
+                      updateEdgeLabel(id, text);
+                    },
+                    isConditional: false,
+                    onEdgeUnselect: handleEdgeUnselect
+                  }
+                });
+              }
+            });
+
+            // Update edge labels from the stored edgeLabels
+            for (const edge of newEdges) {
+              if (edge.data && edgeLabels[edge.id]) {
+                edge.data.text = edgeLabels[edge.id];
+              }
+            }
+
+            setNodes(newNodes);
+            setEdges(newEdges);
+            console.log('Loaded graph from localStorage');
+            
+            // Adjust all node sizes after a brief timeout to ensure the DOM is ready
+            setTimeout(() => {
+              document.querySelectorAll('input[type="text"]').forEach((input) => {
+                // Force the input events to trigger size adjustment
+                const event = new Event('input', { bubbles: true });
+                input.dispatchEvent(event);
+              });
+            }, 200);
+          }
+        }
+      } catch (error) {
+        console.error('Error loading graph from localStorage:', error);
+      }
+    }
   }, [])
 
-  const onboardingSteps: OnboardingStep[] = [
-    {
-      key: 'tooltip0',
-      type: 'modal',
-      placement: 'top' as TooltipPlacement,
-      title: 'Graph Builder',
-      content: (
-        <span>Let's get started with a quick onboarding! During onboarding, canvas interaction will be disabled</span>
-      ),
-      buttonText: 'Start',
-      imageUrl: '/langgraph-logo.png',
-    },
-    {
-      key: 'tooltip1',
-      type: 'tooltip',
-      placement: 'left' as TooltipPlacement,
-      title: '1 of 7: How to create a node',
-      content: '⌘ + click anywhere on the canvas to create a node. Nodes can have custom labels',
-      targetNodeId: 'custom1',
-      tooltipOffset: { x: 0, y: 0 },
-      nodes: [
-        { id: 'source', type: 'source', position: { x: 0, y: 0 }, data: { label: 'source' } },
-        { id: 'end', type: 'end', position: { x: 0, y: 600 }, data: { label: 'end' } },
-        { id: 'custom1', type: 'custom', position: { x: 0, y: 200 }, data: { label: 'Supervisor' } },
-      ],
-    },
-    {
-      key: 'tooltip2',
-      type: 'tooltip',
-      placement: 'left' as TooltipPlacement,
-      title: '2 of 7: How to create an edge',
-      content: 'Connect two nodes by dragging from the bottom of one node to the top of another',
-      targetNodeId: 'custom1',
-      tooltipOffset: { x: 0, y: -120 },
-      nodes: [
-        { id: 'source', type: 'source', position: { x: 0, y: 0 }, data: { label: 'source' } },
-        { id: 'end', type: 'end', position: { x: 0, y: 600 }, data: { label: 'end' } },
-        { id: 'custom1', type: 'custom', position: { x: 0, y: 200 }, data: { label: 'Supervisor' } },
-      ],
-      edges: [
-        { id: 'source->custom1', source: 'source', target: 'custom1', markerEnd: { type: MarkerType.ArrowClosed } },
-      ],
-    },
-    {
-      key: 'tooltip3',
-      type: 'tooltip',
-      placement: 'right' as TooltipPlacement,
-      title: '3 of 7: How to create a conditional edge',
-      content:
-        'Connect one node to multiple nodes to create a conditional edge. Conditional edges can have custom labels',
-      targetNodeId: 'custom1',
-      tooltipOffset: { x: 10, y: 0 },
-      nodes: [
-        { id: 'source', type: 'source', position: { x: 0, y: 0 }, data: { label: 'source' } },
-        { id: 'end', type: 'end', position: { x: 0, y: 600 }, data: { label: 'end' } },
-        { id: 'custom1', type: 'custom', position: { x: 0, y: 200 }, data: { label: 'Supervisor' } },
-        { id: 'custom2', type: 'custom', position: { x: isMobile ? -120 : -200, y: 350 }, data: { label: 'RAG' } },
-        { id: 'custom3', type: 'custom', position: { x: isMobile ? 120 : 200, y: 350 }, data: { label: 'Web Search' } },
-      ],
-      edges: [
-        { id: 'source->custom1', source: 'source', target: 'custom1', markerEnd: { type: MarkerType.ArrowClosed } },
-        {
-          id: 'custom1->custom2',
-          source: 'custom1',
-          target: 'custom2',
-          animated: true,
-          markerEnd: { type: MarkerType.ArrowClosed },
-          type: 'self-connecting-edge',
-          label: 'conditional_edge_1',
-        },
-        {
-          id: 'custom1->custom3',
-          source: 'custom1',
-          target: 'custom3',
-          animated: true,
-          markerEnd: { type: MarkerType.ArrowClosed },
-          type: 'self-connecting-edge',
-          label: 'conditional_edge_1',
-        },
-        { id: 'custom2->end', source: 'custom2', target: 'end', markerEnd: { type: MarkerType.ArrowClosed } },
-        { id: 'custom3->end', source: 'custom3', target: 'end', markerEnd: { type: MarkerType.ArrowClosed } },
-      ],
-    },
-    {
-      key: 'tooltip4',
-      type: 'tooltip',
-      placement: 'left' as TooltipPlacement,
-      title: '4 of 7: How to create a cycle',
-      content: 'Create a loop by dragging from the bottom of one node to the top of itself',
-      targetNodeId: 'custom3',
-      tooltipOffset: { x: -10, y: 0 },
-      nodes: [
-        { id: 'source', type: 'source', position: { x: 0, y: 0 }, data: { label: 'source' } },
-        { id: 'end', type: 'end', position: { x: 0, y: 600 }, data: { label: 'end' } },
-        { id: 'custom1', type: 'custom', position: { x: 0, y: 200 }, data: { label: 'Supervisor' } },
-        { id: 'custom2', type: 'custom', position: { x: isMobile ? -120 : -200, y: 350 }, data: { label: 'RAG' } },
-        { id: 'custom3', type: 'custom', position: { x: isMobile ? 120 : 200, y: 350 }, data: { label: 'Web Search' } },
-      ],
-      edges: [
-        { id: 'source->custom1', source: 'source', target: 'custom1', markerEnd: { type: MarkerType.ArrowClosed } },
-        {
-          id: 'custom1->custom2',
-          source: 'custom1',
-          target: 'custom2',
-          animated: true,
-          label: 'conditional_edge_1',
-          markerEnd: { type: MarkerType.ArrowClosed },
-          type: 'self-connecting-edge',
-        },
-        {
-          id: 'custom1->custom3',
-          source: 'custom1',
-          target: 'custom3',
-          animated: true,
-          label: 'conditional_edge_1',
-          markerEnd: { type: MarkerType.ArrowClosed },
-          type: 'self-connecting-edge',
-        },
-        { id: 'custom2->end', source: 'custom2', target: 'end', markerEnd: { type: MarkerType.ArrowClosed } },
-        {
-          id: 'custom3->end',
-          source: 'custom3',
-          animated: true,
-          label: 'conditional_edge_2',
-          target: 'end',
-          type: 'self-connecting-edge',
-          markerEnd: { type: MarkerType.ArrowClosed },
-        },
-        {
-          id: 'custom1->custom1',
-          source: 'custom3',
-          target: 'custom3',
-          animated: true,
-          label: 'conditional_edge_2',
-          type: 'self-connecting-edge',
-          markerEnd: { type: MarkerType.ArrowClosed },
-        },
-      ],
-    },
-    {
-      key: 'tooltip5',
-      type: 'tooltip',
-      placement: 'left' as TooltipPlacement,
-      title: '5 of 7: Edge colors',
-      content:
-        'You can click on an edge and give it a color. This helps distinguish between different edges on the graph',
-      targetNodeId: 'custom1',
-      tooltipOffset: { x: 0, y: 0 },
-      nodes: [
-        { id: 'source', type: 'source', position: { x: 0, y: 0 }, data: { label: 'source' } },
-        { id: 'end', type: 'end', position: { x: 0, y: 600 }, data: { label: 'end' } },
-        { id: 'custom1', type: 'custom', position: { x: 0, y: 200 }, data: { label: 'Supervisor' } },
-        { id: 'custom2', type: 'custom', position: { x: isMobile ? -120 : -200, y: 350 }, data: { label: 'RAG' } },
-        { id: 'custom3', type: 'custom', position: { x: isMobile ? 120 : 200, y: 350 }, data: { label: 'Web Search' } },
-      ],
-      edges: [
-        { id: 'source->custom1', source: 'source', target: 'custom1', markerEnd: { type: MarkerType.ArrowClosed } },
-        {
-          id: 'custom1->custom2',
-          source: 'custom1',
-          target: 'custom2',
-          animated: true,
-          label: 'conditional_edge_1',
-          markerEnd: { type: MarkerType.ArrowClosed },
-          type: 'self-connecting-edge',
-        },
-        {
-          id: 'custom1->custom3',
-          source: 'custom1',
-          target: 'custom3',
-          animated: true,
-          label: 'conditional_edge_1',
-          markerEnd: { type: MarkerType.ArrowClosed },
-          type: 'self-connecting-edge',
-        },
-        {
-          id: 'custom2->end',
-          source: 'custom2',
-          target: 'end',
-          markerEnd: { type: MarkerType.ArrowClosed },
-        },
-        {
-          id: 'custom3->end',
-          source: 'custom3',
-          animated: true,
-          label: 'conditional_edge_2',
-          type: 'self-connecting-edge',
-          target: 'end',
-          markerEnd: { type: MarkerType.ArrowClosed },
-        },
-        {
-          id: 'custom1->custom1',
-          source: 'custom3',
-          target: 'custom3',
-          animated: true,
-          label: 'conditional_edge_2',
-          type: 'self-connecting-edge',
-          markerEnd: { type: MarkerType.ArrowClosed },
-        },
-      ],
-    },
-    {
-      key: 'tooltip6',
-      type: 'tooltip',
-      placement: 'left' as TooltipPlacement,
-      title: '6 of 7: Delete a node or edge',
-      content: 'To delete a node or edge, click on it and press backspace',
-      targetNodeId: 'custom1',
-      tooltipOffset: { x: 0, y: 0 },
-      nodes: [
-        { id: 'source', type: 'source', position: { x: 0, y: 0 }, data: { label: 'source' } },
-        { id: 'end', type: 'end', position: { x: 0, y: 600 }, data: { label: 'end' } },
-        { id: 'custom1', type: 'custom', position: { x: 0, y: 200 }, data: { label: 'Supervisor' } },
-        { id: 'custom2', type: 'custom', position: { x: isMobile ? -120 : -200, y: 350 }, data: { label: 'RAG' } },
-        { id: 'custom3', type: 'custom', position: { x: isMobile ? 120 : 200, y: 350 }, data: { label: 'Web Search' } },
-      ],
-      edges: [
-        { id: 'source->custom1', source: 'source', target: 'custom1', markerEnd: { type: MarkerType.ArrowClosed } },
-        {
-          id: 'custom1->custom2',
-          source: 'custom1',
-          target: 'custom2',
-          animated: true,
-          label: 'conditional_edge_1',
-          markerEnd: { type: MarkerType.ArrowClosed },
-          type: 'self-connecting-edge',
-        },
-        {
-          id: 'custom1->custom3',
-          source: 'custom1',
-          target: 'custom3',
-          animated: true,
-          label: 'conditional_edge_1',
-          markerEnd: { type: MarkerType.ArrowClosed },
-          type: 'self-connecting-edge',
-        },
-        { id: 'custom2->end', source: 'custom2', target: 'end', markerEnd: { type: MarkerType.ArrowClosed } },
-        {
-          id: 'custom3->end',
-          source: 'custom3',
-          target: 'end',
-          animated: true,
-          label: 'conditional_edge_2',
-          type: 'self-connecting-edge',
-          markerEnd: { type: MarkerType.ArrowClosed },
-        },
-        {
-          id: 'custom1->custom1',
-          source: 'custom3',
-          target: 'custom3',
-          animated: true,
-          label: 'conditional_edge_2',
-          type: 'self-connecting-edge',
-          markerEnd: { type: MarkerType.ArrowClosed },
-        },
-      ],
-    },
-    {
-      key: 'tooltip7',
-      type: 'tooltip',
-      title: '7 of 7: Generate Code',
-      content:
-        "Once you're finished designing the graph, you can generate boilerplate code for it in Python and TypeScript",
-      position: {
-        top: '100px',
-        right: '10px',
-      },
-      placement: 'bottom',
-      nodes: [
-        { id: 'source', type: 'source', position: { x: 0, y: 0 }, data: { label: 'source' } },
-        { id: 'end', type: 'end', position: { x: 0, y: 600 }, data: { label: 'end' } },
-        { id: 'custom1', type: 'custom', position: { x: 0, y: 200 }, data: { label: 'Supervisor' } },
-        { id: 'custom2', type: 'custom', position: { x: isMobile ? -120 : -200, y: 350 }, data: { label: 'RAG' } },
-        { id: 'custom3', type: 'custom', position: { x: isMobile ? 120 : 200, y: 350 }, data: { label: 'Web Search' } },
-      ],
-      edges: [
-        { id: 'source->custom1', source: 'source', target: 'custom1', markerEnd: { type: MarkerType.ArrowClosed } },
-        {
-          id: 'custom1->custom2',
-          source: 'custom1',
-          target: 'custom2',
-          animated: true,
-          label: 'conditional_edge_1',
-          markerEnd: { type: MarkerType.ArrowClosed },
-          type: 'self-connecting-edge',
-        },
-        {
-          id: 'custom1->custom3',
-          source: 'custom1',
-          target: 'custom3',
-          animated: true,
-          label: 'conditional_edge_1',
-          markerEnd: { type: MarkerType.ArrowClosed },
-          type: 'self-connecting-edge',
-        },
-        { id: 'custom2->end', source: 'custom2', target: 'end', markerEnd: { type: MarkerType.ArrowClosed } },
-        {
-          id: 'custom3->end',
-          source: 'custom3',
-          animated: true,
-          label: 'conditional_edge_2',
-          type: 'self-connecting-edge',
-          target: 'end',
-          markerEnd: { type: MarkerType.ArrowClosed },
-        },
-        {
-          id: 'custom1->custom1',
-          source: 'custom3',
-          target: 'custom3',
-          animated: true,
-          label: 'conditional_edge_2',
-          type: 'self-connecting-edge',
-          markerEnd: { type: MarkerType.ArrowClosed },
-        },
-      ],
-    },
-    {
-      key: 'tooltip8',
-      type: 'modal',
-      placement: 'top' as TooltipPlacement,
-      title: "You're ready!",
-      content: <span>Onboarding complete. Happy building!</span>,
-      buttonText: 'Start',
-      imageUrl: '/langgraph-logo.png',
-    },
-  ]
+  const onboardingSteps = getOnboardingSteps(isMobile)
 
   const handleOnboardingNext = () => {
     if (currentOnboardingStep === onboardingSteps.length - 1) {
@@ -548,6 +488,13 @@ export default function App() {
       }
       setCurrentOnboardingStep((prev) => prev + 1)
     }
+  }
+
+  const handleRestartOnboarding = () => {
+    localStorage.setItem('initialOnboardingComplete', 'false')
+    setInitialOnboardingComplete(false)
+    setCurrentOnboardingStep(0)
+    setInfoPanelOpen(false)
   }
 
   const handleNodesChange = useCallback(
@@ -592,6 +539,8 @@ export default function App() {
         }
       }
 
+      console.log('Creating new edge with id:', edgeId, 'and label:', defaultLabel);
+      
       const newEdge: CustomEdgeType = {
         ...connection,
         id: edgeId,
@@ -605,6 +554,7 @@ export default function App() {
         const updatedEdges = addEdge(newEdge, prevEdges)
         const sourceEdges = updatedEdges.filter((edge) => edge.source === connection.source)
         if (sourceEdges.length > 1) {
+          console.log('Multiple edges from same source, setting animated to true');
           return updatedEdges.map((edge) =>
             edge.source === connection.source
               ? {
@@ -617,6 +567,13 @@ export default function App() {
         }
         return updatedEdges
       })
+      
+      // Update the edge label context so that the SelfConnectingEdge component can access it
+      if (connection.source) {
+        console.log('Updating edge label for source:', connection.source, 'to:', defaultLabel);
+        updateEdgeLabel(connection.source, defaultLabel);
+      }
+      
       setIsConnecting(false)
     },
     [setEdges, edges, conditionalGroupCount, buttonTexts, updateEdgeLabel, edgeLabels, maxEdgeLength],
@@ -717,226 +674,126 @@ export default function App() {
           },
         }))
 
-  function generateSpec(edges: any, currentLanguage: 'python' | 'typescript' = language): string {
-    // Step 1: Separate normal edges and animated edges
-    const normalEdges: any[] = edges.filter((edge: any) => !edge.animated)
-    const animatedEdges: any[] = edges.filter((edge: any) => edge.animated === true)
-
-    // Step 2: Group animated edges by source
-    const animatedEdgesBySource: Record<string, Edge[]> = {}
-    animatedEdges.forEach((edge) => {
-      if (!animatedEdgesBySource[edge.source]) {
-        animatedEdgesBySource[edge.source] = []
-      }
-      animatedEdgesBySource[edge.source].push(edge)
-    })
-
-    // Step 3: Build nodes list (unique nodes from all edges, excluding source and end nodes)
-    const nodeNames: Set<string> = new Set()
-    edges.forEach((edge: any) => {
-      const sourceNode = nodes.find((n) => n.id === edge.source)
-      const targetNode = nodes.find((n) => n.id === edge.target)
-
-      // Only add nodes that aren't source or end nodes
-      if (sourceNode && sourceNode.type !== 'source' && sourceNode.type !== 'end' && sourceNode.data?.label) {
-        nodeNames.add(sourceNode.data.label as string)
-      }
-      if (targetNode && targetNode.type !== 'source' && targetNode.type !== 'end' && targetNode.data?.label) {
-        nodeNames.add(targetNode.data.label as string)
-      }
-    })
-
-    // Step 4: Build YAML structure with special handling for source/end connections
-    const yaml: YamlConfig = {
-      ...configValues,
-      nodes: Array.from(nodeNames).map((name) => ({ name })),
-      edges: [
-        // Handle source node connections (convert to __start__)
-        ...normalEdges
-          .filter((edge) => {
-            const sourceNode = nodes.find((n) => n.id === edge.source)
-            return sourceNode?.type === 'source'
-          })
-          .map((edge) => {
-            const targetNode = nodes.find((n) => n.id === edge.target)
-            return {
-              from: '__start__',
-              to: targetNode?.data?.label || '',
-            } as YamlEdge
-          }),
-
-        // Handle end node connections (convert to __end__)
-        ...normalEdges
-          .filter((edge) => {
-            const targetNode = nodes.find((n) => n.id === edge.target)
-            return targetNode?.type === 'end'
-          })
-          .map((edge) => {
-            const sourceNode = nodes.find((n) => n.id === edge.source)
-            return {
-              from: sourceNode?.data?.label || '',
-              to: '__end__',
-            } as YamlEdge
-          }),
-
-        // Handle normal edges between custom nodes
-        ...normalEdges
-          .filter((edge) => {
-            const sourceNode = nodes.find((n) => n.id === edge.source)
-            const targetNode = nodes.find((n) => n.id === edge.target)
-            return sourceNode?.type !== 'source' && targetNode?.type !== 'end'
-          })
-          .map((edge) => {
-            const sourceNode = nodes.find((n) => n.id === edge.source)
-            const targetNode = nodes.find((n) => n.id === edge.target)
-            return {
-              from: sourceNode?.data?.label || '',
-              to: targetNode?.data?.label || '',
-            } as YamlEdge
-          }),
-
-        // Handle conditional edges
-        ...Object.entries(animatedEdgesBySource).map(([source, edges]) => {
-          const sourceNode = nodes.find((n) => n.id === source)
-          // If source is the source node, use __start__ instead
-          const fromNode = sourceNode?.type === 'source' ? '__start__' : sourceNode?.data?.label || ''
-          return {
-            from: fromNode,
-            condition: String(edges[0].label || ''),
-            paths: edges.map((edge) => {
-              const targetNode = nodes.find((n) => n.id === edge.target)
-              // If target is the end node, use __end__ instead
-              return targetNode?.type === 'end' ? '__end__' : targetNode?.data?.label || ''
-            }),
-          } as YamlEdge
-        }),
-      ],
-    }
-
-    // Convert to YAML string
-    const yamlString = Object.entries(yaml)
-      .map(([key, value]) => {
-        if (key === 'nodes' && Array.isArray(value)) {
-          const nodes = value as YamlNode[]
-          return `${key}:\n${nodes.map((node) => `  - name: ${node.name}`).join('\n')}`
-        }
-        if (key === 'edges' && Array.isArray(value)) {
-          const edges = value as YamlEdge[]
-          return `${key}:\n${edges
-            .map((edge) => {
-              if ('condition' in edge) {
-                return `  - from: ${edge.from}\n    condition: ${edge.condition}\n    paths: [${edge.paths?.join(', ')}]`
-              }
-              return `  - from: ${edge.from}\n    to: ${edge.to}`
-            })
-            .join('\n')}`
-        }
-        if (key === 'name') {
-          return `name: ${value}`
-        }
-        return `${key}: ${value}`
-      })
-      .join('\n')
-
-    // Add descriptive comment at the top
-    const fileExt = currentLanguage === 'python' ? '.py' : '.ts'
-    const comment = `# This YAML was auto-generated based on an architecture 
-# designed in LangGraph Builder (https://build.langchain.com).
-#
-# The YAML was used by langgraph-gen (https://github.com/langchain-ai/langgraph-gen-py) 
-# to generate a code stub for a LangGraph application that follows the architecture.
-#
-# langgraph-gen is an open source CLI tool that converts YAML specifications into LangGraph code stubs.
-#
-# The code stub generated from this YAML can be found in stub${fileExt}.
-#
-# A placeholder implementation for the generated stub can be found in implementation${fileExt}.
-
-`
-
-    return comment + yamlString
-  }
-
   const handleLanguageChange = async (option: string) => {
     const newLanguage = option.toLowerCase() as 'python' | 'typescript'
-    setLanguage(newLanguage)
-    // Update the YAML spec with new file extensions when language changes
-    setGeneratedYamlSpec(generateSpec(edges, newLanguage))
+    if (newLanguage === configValues.language) return;
+    
+    updateLanguage(newLanguage);
+    
+    // Update the YAML spec with new file extensions
+    setGeneratedYamlSpec(generateSpec(edges, nodes, configValues as YamlConfig, newLanguage))
+    
+    // If we have code generated already, fetch the alternative language
+    if (Object.keys(generatedFiles).length > 0) {
+      await generateCodeWithLanguage(newLanguage, true)
+    }
+    
+    // Make sure the active file is available in the new language
+    if (activeFile !== 'spec' && !generatedFiles[newLanguage]?.[activeFile]) {
+      // Current file isn't available, find the first available one
+      if (generatedYamlSpec) {
+        setActiveFile('spec');
+      } else {
+        const fileTypes = ['graph', 'stub', 'implementation', 'state', 'config'] as const;
+        for (const fileType of fileTypes) {
+          if (generatedFiles[newLanguage]?.[fileType]) {
+            setActiveFile(fileType);
+            break;
+          }
+        }
+      }
+    }
   }
 
-  const generateCodeWithLanguage = async (lang: 'python' | 'typescript' = language) => {
+  const generateCodeWithLanguage = async (lang: 'python' | 'typescript' = configValues.language, keepExistingFiles: boolean = false) => {
     try {
       setIsLoading(true)
-      setGenerateCodeModalOpen(true)
-      const spec = generateSpec(edges, lang)
+      if (!generateCodeModalOpen) {
+        setGenerateCodeModalOpen(true)
+      }
+      
+      const spec = generateSpec(edges, nodes, configValues as YamlConfig, lang)
       setGeneratedYamlSpec(spec)
+      
+      // Make sure the server URL doesn't end with a trailing slash
+      const baseServerUrl = serverUrl.endsWith('/') 
+        ? serverUrl.substring(0, serverUrl.length - 1) 
+        : serverUrl;
+      const generateEndpoint = `${baseServerUrl}/generate`;
 
-      const [pythonResponse, typescriptResponse] = await Promise.all([
-        fetch('/api/generate-code', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            spec: spec,
-            language: 'python',
-            format: 'yaml',
-            serverUrl: serverUrl,
-          }),
-        }),
-        fetch('/api/generate-code', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            spec: spec,
-            language: 'typescript',
-            format: 'yaml',
-            serverUrl: serverUrl,
-          }),
-        }),
-      ])
-
-      const [pythonData, typescriptData] = await Promise.all([pythonResponse.json(), typescriptResponse.json()])
-
-      setGeneratedFiles({
-        python: {
-          stub: pythonData.stub,
-          implementation: pythonData.implementation,
+      const response = await fetch('/api/generate-code', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
         },
-        typescript: {
-          stub: typescriptData.stub,
-          implementation: typescriptData.implementation,
-        },
-      })
-      setActiveFile('spec')
+        body: JSON.stringify({
+          spec: spec,
+          language: lang,
+          format: 'yaml',
+          serverUrl: generateEndpoint,
+          skip: skipTemplates.length > 0 ? skipTemplates : null,
+          templates: customTemplates,
+          configValues: configValues,
+        }),
+      });
+
+      const data = await response.json();
+
+      // Update generated files
+      if (keepExistingFiles) {
+        // Keep files for the other language, update only the requested language
+        setGeneratedFiles(prev => ({
+          ...prev,
+          [lang]: {
+            stub: data.stub,
+            implementation: data.implementation,
+            graph: data.graph,
+            state: data.state,
+            config: data.config,
+          }
+        }));
+      } else {
+        // Replace all files
+        setGeneratedFiles({
+          [lang]: {
+            stub: data.stub,
+            implementation: data.implementation,
+            graph: data.graph,
+            state: data.state,
+            config: data.config,
+          }
+        });
+      }
+      
+      // Set initial active file - prefer spec if it exists, otherwise pick the first available file
+      if (generatedYamlSpec) {
+        setActiveFile('spec');
+      } else {
+        // Check each file type in order and select the first one with content
+        const fileTypes = ['stub', 'implementation', 'graph', 'state', 'config'] as const;
+        for (const fileType of fileTypes) {
+          if (data[fileType]) {
+            setActiveFile(fileType);
+            break;
+          }
+        }
+      }
     } catch (error) {
-      console.error('Failed to generate code:', error)
-      setGeneratedFiles({})
+      console.error('Failed to generate code:', error);
+      setGeneratedFiles({});
     } finally {
-      setIsLoading(false)
+      setIsLoading(false);
     }
   }
 
   const handleGenerateCode = () => {
-    generateCodeWithLanguage('python')
+    generateCodeWithLanguage(configValues.language || 'python');
   }
 
-  const downloadFile = (content: string, filename: string) => {
-    const blob = new Blob([content], { type: 'text/plain' });
-    const url = window.URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    window.URL.revokeObjectURL(url);
-  }
-
-  const activeCode = activeFile === 'spec' ? generatedYamlSpec : generatedFiles[language]?.[activeFile] || ''
-  const fileExtension = language === 'python' ? '.py' : '.ts'
+  const activeCode = activeFile === 'spec' 
+    ? generatedYamlSpec 
+    : generatedFiles[configValues.language]?.[activeFile] || ''
+  const fileExtension = configValues.language === 'python' ? '.py' : '.ts'
 
   // New helper to copy active code to the clipboard
   const copyActiveCode = () => {
@@ -951,214 +808,29 @@ export default function App() {
     }
   }
 
-  const calculateTooltipPosition = (
-    targetNodeId: string,
-    placement: TooltipPlacement,
-    offset: { x: number; y: number } = { x: 0, y: 0 },
-  ): React.CSSProperties => {
-    if (!reactFlowInstance || !targetNodeId) {
-      return { top: '50%', left: '50%', transform: 'translate(-50%, -50%)' }
-    }
-
-    const node = reactFlowInstance.getNode(targetNodeId)
-    if (!node) {
-      return { top: '50%', left: '50%', transform: 'translate(-50%, -50%)' }
-    }
-
-    const transform = reactFlowInstance.getViewport()
-    const nodePosition = {
-      x: node.position.x * transform.zoom + transform.x,
-      y: node.position.y * transform.zoom + transform.y,
-    }
-
-    const nodeElement = document.querySelector(`[data-id="${targetNodeId}"]`)
-    const nodeRect = nodeElement?.getBoundingClientRect()
-    const nodeHeight = nodeRect?.height || 40
-    const nodeWidth = nodeRect?.width || 150
-    const tooltipGap = 12 // Base gap between node and tooltip
-
-    // Apply the user-provided offset to the node position
-    nodePosition.x += offset.x
-    nodePosition.y += offset.y
-
-    switch (placement.split('-')[0]) {
-      case 'top':
-        return {
-          top: `${nodePosition.y - tooltipGap}px`,
-          left: `${nodePosition.x + nodeWidth / 2}px`,
-          transform: 'translate(-50%, -100%)',
-        }
-      case 'bottom':
-        return {
-          top: `${nodePosition.y + nodeHeight + tooltipGap}px`,
-          left: `${nodePosition.x + nodeWidth / 2}px`,
-          transform: 'translate(-50%, 0)',
-        }
-      case 'left':
-        return {
-          top: `${nodePosition.y + nodeHeight / 2}px`,
-          left: `${nodePosition.x - tooltipGap}px`,
-          transform: 'translate(-100%, -50%)',
-        }
-      case 'right':
-        return {
-          top: `${nodePosition.y + nodeHeight / 2}px`,
-          left: `${nodePosition.x + nodeWidth + tooltipGap}px`,
-          transform: 'translate(0, -50%)',
-        }
-      default:
-        return {
-          top: `${nodePosition.y + nodeHeight + tooltipGap}px`,
-          left: `${nodePosition.x + nodeWidth / 2}px`,
-          transform: 'translate(-50%, 0)',
-        }
-    }
-  }
-
-  const downloadAsZip = () => {
-    const zip = new JSZip()
-
-    // Use the stored YAML specification
-    zip.file('spec.yml', generatedYamlSpec)
-
-    // Only add files for the currently selected language
-    if (language === 'python') {
-      if (generatedFiles.python?.stub) {
-        zip.file('stub.py', generatedFiles.python.stub)
-      }
-      if (generatedFiles.python?.implementation) {
-        zip.file('implementation.py', generatedFiles.python.implementation)
-      }
-    } else {
-      if (generatedFiles.typescript?.stub) {
-        zip.file('stub.ts', generatedFiles.typescript.stub)
-      }
-      if (generatedFiles.typescript?.implementation) {
-        zip.file('implementation.ts', generatedFiles.typescript.implementation)
-      }
-    }
-
-    // Generate and download the zip
-    zip.generateAsync({ type: 'blob' }).then((content) => {
-      const url = window.URL.createObjectURL(content)
-      const link = document.createElement('a')
-      link.href = url
-      link.download = 'langgraph-agent.zip'
-      document.body.appendChild(link)
-      link.click()
-      document.body.removeChild(link)
-      window.URL.revokeObjectURL(url)
-    })
-  }
-
   const handleTemplateSelect = (template: Template) => {
     setNodes(template.nodes)
     setEdges(template.edges)
     setIsTemplatesPanelOpen(false)
   }
 
-  // Server Config Modal Content Component
-  const ServerConfigModalContent = () => {
-    const [localServerUrl, setLocalServerUrl] = useState(serverUrl)
-
-    const handleClose = () => {
-      setServerUrl(localServerUrl)
-      setIsServerConfigModalOpen(false)
-    }
-
-    const handleReset = () => {
-      setLocalServerUrl('https://langgraph-gen-server-570601939772.us-central1.run.app/generate')
-    }
-
-    return (
-      <div className='flex flex-col gap-4'>
-        <div className='flex flex-col gap-1'>
-          <label className='text-sm font-medium text-gray-700'>Server URL</label>
-          <input
-            type='text'
-            value={localServerUrl}
-            onChange={(e) => setLocalServerUrl(e.target.value)}
-            className='px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#2F6868] focus:border-transparent'
-            autoComplete="off"
-          />
-        </div>
-        <div className='flex justify-end gap-2 mt-4'>
-          <button
-            onClick={handleReset}
-            className='px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 transition-colors'
-          >
-            Reset
-          </button>
-          <button
-            onClick={handleClose}
-            className='px-4 py-2 bg-[#2F6868] text-white rounded-md hover:bg-[#245757] transition-colors'
-          >
-            Save
-          </button>
-        </div>
-      </div>
-    )
-  }
-
-  // Graph Config Modal Content Component
-  const GraphConfigModalContent = () => {
-    const [localConfigValues, setLocalConfigValues] = useState(configValues)
-
-    const handleInputChange = (key: string, value: string) => {
-      setLocalConfigValues(prev => ({ ...prev, [key]: value }))
-    }
-
-    const handleClose = () => {
-      setConfigValues(localConfigValues)
-      setIsConfigModalOpen(false)
-    }
-
-    const handleReset = () => {
-      setLocalConfigValues({
-        name: 'CustomAgent',
-        builder_name: 'builder',
-        compiled_name: 'graph',
-        config: 'config.Configuration',
-        state: 'state.State',
-        input: 'state.InputState',
-        output: 'Any',
-        implementation: 'implementation.IMPLEMENTATION'
-      })
-    }
-
-    return (
-      <div className='flex flex-col gap-4'>
-        {Object.entries(localConfigValues).map(([key, value]) => (
-          <div key={key} className='flex flex-col gap-1'>
-            <label className='text-sm font-medium text-gray-700'>
-              {key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
-            </label>
-            <input
-              type='text'
-              value={value}
-              onChange={(e) => handleInputChange(key, e.target.value)}
-              className='px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#2F6868] focus:border-transparent'
-              autoComplete="off"
-            />
-          </div>
-        ))}
-        <div className='flex justify-end gap-2 mt-4'>
-          <button
-            onClick={handleReset}
-            className='px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 transition-colors'
-          >
-            Reset
-          </button>
-          <button
-            onClick={handleClose}
-            className='px-4 py-2 bg-[#2F6868] text-white rounded-md hover:bg-[#245757] transition-colors'
-          >
-            Save
-          </button>
-        </div>
-      </div>
-    )
-  }
+  // Function to update graph configuration and save to localStorage
+  const updateGraphConfig = (newGraphConfig: {
+    name: string;
+    builder_name: string;
+    compiled_name: string;
+    config: string;
+    state: string;
+    input: string;
+    output: string;
+    implementation: string;
+  }) => {
+    setConfigValues(prev => ({
+      ...prev,
+      ...newGraphConfig
+    }));
+    localStorage.setItem('lg-builder-graph-config', JSON.stringify(newGraphConfig));
+  };
 
   return (
     <div className='w-screen h-screen'>
@@ -1211,7 +883,7 @@ export default function App() {
                 }
                 
                 // Update configuration values
-                setConfigValues({
+                const newConfig = {
                   name: parsed.name || 'CustomAgent',
                   builder_name: parsed.builder_name || 'builder',
                   compiled_name: parsed.compiled_name || 'graph',
@@ -1219,8 +891,28 @@ export default function App() {
                   state: parsed.state || 'state.State',
                   input: parsed.input || 'state.InputState',
                   output: parsed.output || 'Any',
-                  implementation: parsed.implementation || 'implementation.IMPLEMENTATION'
-                });
+                  implementation: parsed.implementation || 'implementation.IMPLEMENTATION',
+                  language: parsed.language || configValues.language
+                };
+
+                // Save to localStorage
+                localStorage.setItem('lg-builder-graph-config', JSON.stringify({
+                  name: newConfig.name,
+                  builder_name: newConfig.builder_name,
+                  compiled_name: newConfig.compiled_name,
+                  config: newConfig.config,
+                  state: newConfig.state,
+                  input: newConfig.input,
+                  output: newConfig.output,
+                  implementation: newConfig.implementation
+                }));
+                
+                if (parsed.language && (parsed.language === 'python' || parsed.language === 'typescript') && 
+                    parsed.language !== configValues.language) {
+                  localStorage.setItem('lg-builder-language', parsed.language);
+                }
+                
+                setConfigValues(newConfig);
 
                 // Create nodes from the YAML
                 const newNodes = [
@@ -1238,8 +930,12 @@ export default function App() {
                     // Alternate between left and right side for better visualization
                     const xOffset = index % 2 === 0 ? -200 : 200;
                     
+                    // Initialize button text for this node
+                    const nodeId = `node-${index + 1}`;
+                    updateButtonText(nodeId, node.name);
+                    
                     return {
-                      id: `node-${index + 1}`, // Use consistent ID format
+                      id: nodeId, // Use consistent ID format
                       type: 'custom',
                       position: { x: xOffset, y: yPosition },
                       data: { label: node.name }
@@ -1251,28 +947,46 @@ export default function App() {
                 setMaxNodeLength(parsed.nodes.length);
 
                 // Create edges from the YAML
-                const newEdges = parsed.edges.map((edge, index) => {
+                const newEdges: Edge[] = [];
+                
+                // Process each edge from the YAML
+                parsed.edges.forEach((edge, index) => {
                   if ('condition' in edge && edge.paths) {
                     // Handle conditional edges
-                    return edge.paths.map((path, pathIndex) => {
-                      const sourceNode = newNodes.find(n => n.data.label === edge.from);
+                    const sourceNode = newNodes.find(n => n.data.label === edge.from);
+                    const sourceId = edge.from === '__start__' ? 'source' : 
+                                   edge.from === '__end__' ? 'end' : 
+                                   sourceNode?.id || '';
+                                   
+                    edge.paths.forEach((path, pathIndex) => {
                       const targetNode = newNodes.find(n => n.data.label === path);
-                      const sourceId = edge.from === '__start__' ? 'source' : 
-                                     edge.from === '__end__' ? 'end' : 
-                                     sourceNode?.id || '';
                       const targetId = path === '__start__' ? 'source' : 
                                      path === '__end__' ? 'end' : 
                                      targetNode?.id || 'end';
-                      return {
-                        id: `${sourceId}->${targetId}-${pathIndex}`,
+                      
+                      newEdges.push({
+                        id: `edge-${index}-${pathIndex}`,
                         source: sourceId,
                         target: targetId,
                         animated: true,
                         type: 'self-connecting-edge',
                         label: edge.condition,
                         markerEnd: { type: MarkerType.ArrowClosed },
-                        data: { onEdgeUnselect: handleEdgeUnselect }
-                      };
+                        data: {
+                          text: edge.condition || '',
+                          edgeId: `edge-${index}-${pathIndex}`,
+                          onEdgeLabelChange: (id: string, text: string) => {
+                            updateEdgeLabel(id, text);
+                          },
+                          isConditional: true,
+                          onEdgeUnselect: handleEdgeUnselect
+                        }
+                      });
+                      
+                      // Update the edge label context
+                      if (edge.condition && sourceId) {
+                        updateEdgeLabel(sourceId, edge.condition);
+                      }
                     });
                   } else {
                     // Handle normal edges
@@ -1284,16 +998,25 @@ export default function App() {
                     const targetId = edge.to === '__start__' ? 'source' : 
                                    edge.to === '__end__' ? 'end' : 
                                    targetNode?.id || 'end';
-                    return {
-                      id: `${sourceId}->${targetId}`,
+                    
+                    newEdges.push({
+                      id: `edge-${index}`,
                       source: sourceId,
                       target: targetId,
                       type: 'self-connecting-edge',
                       markerEnd: { type: MarkerType.ArrowClosed },
-                      data: { onEdgeUnselect: handleEdgeUnselect }
-                    };
+                      data: {
+                        text: '',
+                        edgeId: `edge-${index}`,
+                        onEdgeLabelChange: (id: string, text: string) => {
+                          updateEdgeLabel(id, text);
+                        },
+                        isConditional: false,
+                        onEdgeUnselect: handleEdgeUnselect
+                      }
+                    });
                   }
-                }).flat();
+                });
 
                 // Update maxEdgeLength based on the number of loaded edges
                 setMaxEdgeLength(newEdges.length);
@@ -1301,6 +1024,15 @@ export default function App() {
                 // Update the graph
                 setNodes(newNodes);
                 setEdges(newEdges);
+                
+                // Adjust all node sizes after a brief timeout to ensure the DOM is ready
+                setTimeout(() => {
+                  document.querySelectorAll('input[type="text"]').forEach((input) => {
+                    // Force the input events to trigger size adjustment
+                    const event = new Event('input', { bubbles: true });
+                    input.dispatchEvent(event);
+                  });
+                }, 200);
               };
               reader.readAsText(file);
             }}
@@ -1325,7 +1057,7 @@ export default function App() {
 
         <button
           onClick={() => {
-            const spec = generateSpec(edges)
+            const spec = generateSpec(edges, nodes, configValues as YamlConfig)
             downloadFile(spec, 'spec.yml')
           }}
           className={`flex items-center gap-2 px-3 py-2 bg-white rounded-lg shadow-md transition-shadow ${
@@ -1350,6 +1082,51 @@ export default function App() {
           </svg>
           Download Spec
         </button>
+
+        <button
+          onClick={() => {
+            if (confirm('Are you sure you want to clear your saved graph? This action cannot be undone.')) {
+              localStorage.removeItem('lg-builder-yaml-spec');
+              localStorage.removeItem('lg-builder-edge-labels');
+              // Reset to initial state
+              setNodes(initialNodes);
+              setEdges(initialEdges);
+              setGeneratedYamlSpec('');
+              setGeneratedFiles({});
+              
+              // Reset edge labels in context
+              const edgeLabelKeys = Object.keys(edgeLabels);
+              if (edgeLabelKeys.length > 0) {
+                edgeLabelKeys.forEach(key => {
+                  updateEdgeLabel(key, '');
+                });
+              }
+            }
+          }}
+          className={`flex items-center gap-2 px-3 py-2 bg-white rounded-lg shadow-md transition-shadow ${
+            !initialOnboardingComplete ? 'cursor-not-allowed opacity-70' : 'hover:shadow-lg'
+          }`}
+          disabled={!initialOnboardingComplete}
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M3 6h18"></path>
+            <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
+            <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
+            <line x1="10" y1="11" x2="10" y2="17"></line>
+            <line x1="14" y1="11" x2="14" y2="17"></line>
+          </svg>
+          Clear Graph
+        </button>
       </div>
       <div className='absolute top-5 right-5 z-50 flex gap-2'>
         <div className='flex flex-row gap-2'>
@@ -1372,6 +1149,26 @@ export default function App() {
               disabled={!hasValidSourceToEndPath() || !initialOnboardingComplete}
             >
               <div className='text-[#333333] font-medium text-center text-slate-100'>Generate Code</div>
+            </button>
+          </Tooltip>
+
+          <Tooltip
+            title="Configure Templates"
+            placement='bottom'
+            arrow
+          >
+            <button
+              disabled={!initialOnboardingComplete}
+              className={`p-3 rounded-md shadow-lg border border-[#2F6868] text-[#2F6868] focus:outline-none ${
+                !initialOnboardingComplete ? 'cursor-not-allowed' : ''
+              }`}
+              aria-label='Templates Configuration'
+              onClick={() => setIsTemplateConfigModalOpen(true)}
+            >
+              <div className="flex items-center gap-2">
+                <Settings className='h-6 w-6' />
+                <span className="text-sm">Code</span>
+              </div>
             </button>
           </Tooltip>
 
@@ -1519,49 +1316,11 @@ export default function App() {
         </div>
         <div className='hidden sm:block'>
           {/* Sidebar */}
-          <div
-            className={`
-            fixed bottom-0 left-0 bg-white shadow-xl rounded-md z-20 
-            transform transition-transform duration-300 
-            ${infoPanelOpen ? 'translate-x-0' : '-translate-x-full'}
-          `}
-          >
-            <div className='flex flex-col p-6 space-y-5'>
-              <div className='flex flex-row items-center justify-between'>
-                <h2 className='text-xl font-medium'>Key Commands</h2>
-                <button
-                  className='font-bold text-gray-400 hover:text-gray-600 transition-colors duration-300 ease-in-out'
-                  onClick={() => setInfoPanelOpen(false)}
-                >
-                  <X size={25} />
-                </button>
-              </div>
-              <div>
-                <p className='text-sm text-slate-800'>Create a node</p>
-                <p className='mt-2'>⌘ + click anywhere on the canvas</p>
-              </div>
-              <div>
-                <p className='text-sm text-slate-800'>Create an edge</p>
-                <p className='mt-2'>click + drag from the bottom of one node to the top of another</p>
-              </div>
-              <div>
-                <p className='text-sm text-slate-800'>Create a conditional edge</p>
-                <p className='mt-2'>connect one node to multiple nodes</p>
-              </div>
-              <div>
-                <p className='text-sm text-slate-800'>Create a cycle</p>
-                <p className='mt-2'>click + drag from the bottom to the top of a node</p>
-              </div>
-              <div>
-                <p className='text-sm text-slate-800'>Delete an edge/node</p>
-                <p className='mt-2'>click the edge/node and hit the backspace key</p>
-              </div>
-              <div>
-                <p className='text-sm text-slate-800'>Color an edge</p>
-                <p className='mt-2'>click the edge and select an option from the color picker</p>
-              </div>
-            </div>
-          </div>
+          <KeyCommandsModal 
+            isOpen={infoPanelOpen}
+            onClose={() => setInfoPanelOpen(false)}
+            onRedoOnboarding={handleRestartOnboarding}
+          />
 
           {initialOnboardingComplete === false && currentOnboardingStep < onboardingSteps.length && (
             <div
@@ -1576,64 +1335,12 @@ export default function App() {
                 pointerEvents: 'none',
               }}
             >
-              {onboardingSteps[currentOnboardingStep].type === 'modal' ? (
-                <div>
-                  <GenericModal
-                    isOpen={true}
-                    onClose={handleOnboardingNext}
-                    title={onboardingSteps[currentOnboardingStep].title || ''}
-                    content={<div>{onboardingSteps[currentOnboardingStep].content}</div>}
-                    buttonText={onboardingSteps[currentOnboardingStep].buttonText || ''}
-                    imageUrl={onboardingSteps[currentOnboardingStep].imageUrl}
-                  />
-                </div>
-              ) : (
-                <>
-                  {/* Desktop Tooltip */}
-                  <div
-                    className={`fixed pointer-events-auto ${onboardingSteps[currentOnboardingStep].className || ''} hidden lg:block`}
-                    style={{
-                      ...(onboardingSteps[currentOnboardingStep].position
-                        ? onboardingSteps[currentOnboardingStep].position
-                        : calculateTooltipPosition(
-                            onboardingSteps[currentOnboardingStep].targetNodeId || '',
-                            onboardingSteps[currentOnboardingStep].placement || 'top',
-                            onboardingSteps[currentOnboardingStep].tooltipOffset,
-                          )),
-                      pointerEvents: 'auto',
-                    }}
-                  >
-                    <div className='py-3 px-3 flex bg-white rounded-lg shadow-lg flex-col w-[280px] md:w-[380px]'>
-                      <div className='flex flex-row items-center justify-between'>
-                        <div className='text-sm font-medium'>{onboardingSteps[currentOnboardingStep].title}</div>
-                        <button
-                          onClick={handleOnboardingNext}
-                          className='text-sm bg-slate-800 hover:bg-slate-900 text-slate-100 py-1 px-2 rounded-md'
-                        >
-                          Next
-                        </button>
-                      </div>
-                      <div className='text-sm pt-3'>{onboardingSteps[currentOnboardingStep].content}</div>
-                    </div>
-                  </div>
-
-                  {/* Mobile Tooltip */}
-                  <div className='fixed bottom-[150px] right-5 z-50 pointer-events-auto lg:hidden'>
-                    <div className='py-3 px-3 flex bg-white rounded-lg shadow-lg flex-col w-[280px] md:w-[380px]'>
-                      <div className='flex flex-row items-center justify-between'>
-                        <div className='text-sm font-medium'>{onboardingSteps[currentOnboardingStep].title}</div>
-                        <button
-                          onClick={handleOnboardingNext}
-                          className='text-sm bg-slate-800 hover:bg-slate-900 text-slate-100 py-1 px-2 rounded-md'
-                        >
-                          Next
-                        </button>
-                      </div>
-                      <div className='text-sm pt-3'>{onboardingSteps[currentOnboardingStep].content}</div>
-                    </div>
-                  </div>
-                </>
-              )}
+              <OnboardingContent
+                currentStep={currentOnboardingStep}
+                onboardingSteps={onboardingSteps}
+                onNext={handleOnboardingNext}
+                reactFlowInstance={reactFlowInstance}
+              />
             </div>
           )}
 
@@ -1654,19 +1361,22 @@ export default function App() {
             <ModalDialog className='bg-slate-150 hidden sm:block absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2'>
               <>
                 <div className='flex flex-col'>
-                  {!isLoading && (generatedFiles.python?.stub || generatedFiles.python?.implementation) && (
+                  {!isLoading && (generatedFiles[configValues.language?.toLowerCase() as 'python' | 'typescript']?.stub || generatedFiles[configValues.language?.toLowerCase() as 'python' | 'typescript']?.implementation) && (
                     <div className='flex flex-row justify-between items-center'>
                       <h2 className='md:text-lg font-medium'>Generated Code:</h2>
                       <div className='flex py-3 md:py-0 flex-row gap-2'>
                         <button
-                          onClick={downloadAsZip}
+                          onClick={() => downloadAsZip(generatedFiles, generatedYamlSpec, configValues.language || 'python')}
                           className='px-3 rounded-t-md bg-white rounded-b-md border border-gray-300 hover:bg-gray-50'
                           title='Download as ZIP'
                         >
                           <Download size={18} />
                         </button>
                         <div className='max-w-xs pr-3'>
-                          <MultiButton onSelectionChange={(option) => handleLanguageChange(option)} />
+                          <MultiButton 
+                            onSelectionChange={(option) => handleLanguageChange(option)}
+                            initialSelection={configValues.language === 'typescript' ? 'TypeScript' : 'Python'}
+                          />
                         </div>
                         <button
                           className='font-bold pr-3 text-gray-400 hover:text-gray-600 transition-colors duration-300 ease-in-out'
@@ -1681,27 +1391,29 @@ export default function App() {
                   )}
 
                   <div className='flex flex-col gap-3'>
-                    {!isLoading && (generatedFiles.python?.stub || generatedFiles.python?.implementation) ? (
+                    {!isLoading && (generatedFiles[configValues.language?.toLowerCase() as 'python' | 'typescript']?.stub || generatedFiles[configValues.language?.toLowerCase() as 'python' | 'typescript']?.implementation) ? (
                       <div className='mt-3 md:w-[50vw] md:h-[80vh]'>
-                        <div className='flex'>
-                          <button
-                            className={`px-3 rounded-t-md ${activeFile === 'spec' ? 'bg-[#246161] text-white' : 'bg-gray-200'}`}
-                            onClick={() => setActiveFile('spec')}
-                          >
-                            spec.yml
-                          </button>
-                          <button
-                            className={`px-3 rounded-t-md py-1 ${activeFile === 'stub' ? 'bg-[#246161] text-white' : 'bg-gray-200'}`}
-                            onClick={() => setActiveFile('stub')}
-                          >
-                            {`stub${fileExtension}`}
-                          </button>
-                          <button
-                            className={`px-3 rounded-t-md ${activeFile === 'implementation' ? 'bg-[#246161] text-white' : 'bg-gray-200'}`}
-                            onClick={() => setActiveFile('implementation')}
-                          >
-                            {`implementation${fileExtension}`}
-                          </button>
+                        <div className='flex flex-wrap'>
+                          {generatedYamlSpec && (
+                            <button
+                              className={`px-3 rounded-t-md ${activeFile === 'spec' ? 'bg-[#246161] text-white' : 'bg-gray-200'}`}
+                              onClick={() => setActiveFile('spec')}
+                            >
+                              spec.yml
+                            </button>
+                          )}
+                          {/* Use loop to render file type tabs */}
+                          {(['stub', 'implementation', 'graph', 'state', 'config'] as const).map((fileType) => 
+                            generatedFiles[configValues.language?.toLowerCase() as 'python' | 'typescript']?.[fileType] && (
+                            <button
+                                key={fileType}
+                                className={`px-3 rounded-t-md ${fileType === 'stub' ? 'py-1' : ''} ${activeFile === fileType ? 'bg-[#246161] text-white' : 'bg-gray-200'}`}
+                                onClick={() => setActiveFile(fileType)}
+                            >
+                                {`${fileType}${fileExtension}`}
+                            </button>
+                            )
+                          )}
                         </div>
                         <div className='relative bg-gray-100 overflow-hidden h-[calc(80vh-30px)]'>
                           <div className='absolute top-5 right-6 z-10 flex gap-2'>
@@ -1723,7 +1435,7 @@ export default function App() {
                           <Highlight
                             theme={themes.nightOwl}
                             code={activeCode}
-                            language={activeFile === 'spec' ? 'yaml' : language === 'python' ? 'python' : 'typescript'}
+                            language={activeFile === 'spec' ? 'yaml' : configValues.language === 'python' ? 'python' : 'typescript'}
                           >
                             {({ style, tokens, getLineProps, getTokenProps }) => (
                               <pre className='p-3 overflow-auto h-full max-h-full' style={{ ...style, height: '100%' }}>
@@ -1760,14 +1472,74 @@ export default function App() {
         onClose={() => setIsServerConfigModalOpen(false)}
         title="Server Configuration"
       >
-        <ServerConfigModalContent />
+        <ServerConfigModal
+          serverUrl={serverUrl}
+          onSave={({ serverUrl: newServerUrl }) => {
+            updateServerUrl(newServerUrl);
+            setIsServerConfigModalOpen(false);
+          }}
+          onRefreshTemplates={fetchTemplates}
+        />
+      </ConfigModal>
+      <ConfigModal
+        isOpen={isTemplateConfigModalOpen}
+        onClose={() => setIsTemplateConfigModalOpen(false)}
+        title="Template Configuration"
+        className="md:w-[50vw] md:max-w-[800px]"
+      >
+        <CodeTemplateConfig
+          onlyTemplates={[]}
+          skipTemplates={skipTemplates}
+          availableTemplates={availableTemplates}
+          configValues={configValues}
+          customTemplates={customTemplates}
+          isLoadingTemplates={isLoadingTemplates}
+          templateError={templateError}
+          onSave={({ skipTemplates: newSkip, customTemplates: newCustomTemplates, language: newLanguage }) => {
+            updateSkipTemplates(newSkip);
+            updateCustomTemplates(newCustomTemplates);
+            
+            // If language has changed, update it in configValues and potentially regenerate code
+            if (newLanguage !== configValues.language) {
+              updateLanguage(newLanguage);
+              
+              // Update the YAML spec with new file extensions
+              setGeneratedYamlSpec(generateSpec(edges, nodes, {
+                ...configValues,
+                language: newLanguage
+              } as YamlConfig, newLanguage));
+              
+              // If we have code generated already, fetch the alternative language
+              if (Object.keys(generatedFiles).length > 0) {
+                generateCodeWithLanguage(newLanguage, true);
+              }
+            }
+            
+            setIsTemplateConfigModalOpen(false);
+          }}
+        />
       </ConfigModal>
       <ConfigModal
         isOpen={isConfigModalOpen}
         onClose={() => setIsConfigModalOpen(false)}
         title="Graph Configuration"
       >
-        <GraphConfigModalContent />
+        <GraphConfigModal 
+          configValues={{
+            name: configValues.name,
+            builder_name: configValues.builder_name,
+            compiled_name: configValues.compiled_name,
+            config: configValues.config,
+            state: configValues.state,
+            input: configValues.input,
+            output: configValues.output,
+            implementation: configValues.implementation
+          }}
+          onSave={(newGraphConfigValues) => {
+            updateGraphConfig(newGraphConfigValues);
+            setIsConfigModalOpen(false);
+          }}
+        />
       </ConfigModal>
     </div>
   )
