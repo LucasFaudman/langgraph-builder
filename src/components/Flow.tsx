@@ -19,7 +19,7 @@ import { initialEdges, edgeTypes, type CustomEdgeType } from './edges'
 import { useButtonText } from '@/contexts/ButtonTextContext'
 import { useEdgeLabel } from '@/contexts/EdgeLabelContext'
 import { Modal as MuiModal, ModalDialog, Tooltip, Snackbar } from '@mui/joy'
-import { X, Copy, Info, Check, Download } from 'lucide-react'
+import { X, Copy, Info, Check, Download, Settings } from 'lucide-react'
 import { Highlight, themes } from 'prism-react-renderer'
 import MultiButton from './ui/multibutton'
 import GenericModal from './GenericModal'
@@ -27,6 +27,7 @@ import { ColorEditingProvider } from './edges/SelfConnectingEdge'
 import JSZip from 'jszip'
 import TemplatesPanel, { type Template } from './ui/TemplatesPanel'
 import yaml from 'js-yaml'
+import ConfigModal from './ConfigModal'
 
 // Loading spinner component
 const LoadingSpinner = () => (
@@ -133,6 +134,8 @@ export default function App() {
   const [generatedYamlSpec, setGeneratedYamlSpec] = useState<string>('')
   const [isTemplatesPanelOpen, setIsTemplatesPanelOpen] = useState(false)
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false)
+  const [isServerConfigModalOpen, setIsServerConfigModalOpen] = useState(false)
+  const [serverUrl, setServerUrl] = useState('https://langgraph-gen-server-570601939772.us-central1.run.app/generate')
   const [configValues, setConfigValues] = useState({
     name: 'CustomAgent',
     builder_name: 'builder',
@@ -878,6 +881,7 @@ export default function App() {
             spec: spec,
             language: 'python',
             format: 'yaml',
+            serverUrl: serverUrl,
           }),
         }),
         fetch('/api/generate-code', {
@@ -889,6 +893,7 @@ export default function App() {
             spec: spec,
             language: 'typescript',
             format: 'yaml',
+            serverUrl: serverUrl,
           }),
         }),
       ])
@@ -1052,8 +1057,51 @@ export default function App() {
     setIsTemplatesPanelOpen(false)
   }
 
-  // Configuration Modal Component
-  const ConfigModal = () => {
+  // Server Config Modal Content Component
+  const ServerConfigModalContent = () => {
+    const [localServerUrl, setLocalServerUrl] = useState(serverUrl)
+
+    const handleClose = () => {
+      setServerUrl(localServerUrl)
+      setIsServerConfigModalOpen(false)
+    }
+
+    const handleReset = () => {
+      setLocalServerUrl('https://langgraph-gen-server-570601939772.us-central1.run.app/generate')
+    }
+
+    return (
+      <div className='flex flex-col gap-4'>
+        <div className='flex flex-col gap-1'>
+          <label className='text-sm font-medium text-gray-700'>Server URL</label>
+          <input
+            type='text'
+            value={localServerUrl}
+            onChange={(e) => setLocalServerUrl(e.target.value)}
+            className='px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#2F6868] focus:border-transparent'
+            autoComplete="off"
+          />
+        </div>
+        <div className='flex justify-end gap-2 mt-4'>
+          <button
+            onClick={handleReset}
+            className='px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 transition-colors'
+          >
+            Reset
+          </button>
+          <button
+            onClick={handleClose}
+            className='px-4 py-2 bg-[#2F6868] text-white rounded-md hover:bg-[#245757] transition-colors'
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // Graph Config Modal Content Component
+  const GraphConfigModalContent = () => {
     const [localConfigValues, setLocalConfigValues] = useState(configValues)
 
     const handleInputChange = (key: string, value: string) => {
@@ -1065,45 +1113,50 @@ export default function App() {
       setIsConfigModalOpen(false)
     }
 
+    const handleReset = () => {
+      setLocalConfigValues({
+        name: 'CustomAgent',
+        builder_name: 'builder',
+        compiled_name: 'graph',
+        config: 'config.Configuration',
+        state: 'state.State',
+        input: 'state.InputState',
+        output: 'Any',
+        implementation: 'implementation.IMPLEMENTATION'
+      })
+    }
+
     return (
-      <MuiModal
-        hideBackdrop={true}
-        onClose={handleClose}
-        onClick={(e: React.MouseEvent) => {
-          if (e.target === e.currentTarget) {
-            handleClose()
-          }
-        }}
-        open={isConfigModalOpen}
-      >
-        <ModalDialog className='bg-slate-150 hidden sm:block absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2'>
-          <div className='flex flex-col gap-4'>
-            <div className='flex justify-between items-center'>
-              <h2 className='text-lg font-medium'>Configuration</h2>
-              <button
-                className='font-bold text-gray-400 hover:text-gray-600 transition-colors duration-300 ease-in-out'
-                onClick={handleClose}
-              >
-                <X size={25} />
-              </button>
-            </div>
-            <div className='flex flex-col gap-4'>
-              {Object.entries(localConfigValues).map(([key, value]) => (
-                <div key={key} className='flex flex-col gap-1'>
-                  <label className='text-sm font-medium text-gray-700'>{key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</label>
-                  <input
-                    type='text'
-                    value={value}
-                    onChange={(e) => handleInputChange(key, e.target.value)}
-                    className='px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#2F6868] focus:border-transparent'
-                    autoComplete="off"
-                  />
-                </div>
-              ))}
-            </div>
+      <div className='flex flex-col gap-4'>
+        {Object.entries(localConfigValues).map(([key, value]) => (
+          <div key={key} className='flex flex-col gap-1'>
+            <label className='text-sm font-medium text-gray-700'>
+              {key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
+            </label>
+            <input
+              type='text'
+              value={value}
+              onChange={(e) => handleInputChange(key, e.target.value)}
+              className='px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#2F6868] focus:border-transparent'
+              autoComplete="off"
+            />
           </div>
-        </ModalDialog>
-      </MuiModal>
+        ))}
+        <div className='flex justify-end gap-2 mt-4'>
+          <button
+            onClick={handleReset}
+            className='px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 transition-colors'
+          >
+            Reset
+          </button>
+          <button
+            onClick={handleClose}
+            className='px-4 py-2 bg-[#2F6868] text-white rounded-md hover:bg-[#245757] transition-colors'
+          >
+            Save
+          </button>
+        </div>
+      </div>
     )
   }
 
@@ -1258,13 +1311,39 @@ export default function App() {
           </svg>
           Load Spec
         </label>
+
+        <button
+          onClick={() => {
+            const spec = generateSpec(edges)
+            downloadFile(spec, 'spec.yml')
+          }}
+          className={`flex items-center gap-2 px-3 py-2 bg-white rounded-lg shadow-md transition-shadow ${
+            !initialOnboardingComplete ? 'cursor-not-allowed opacity-70' : 'hover:shadow-lg'
+          }`}
+          disabled={!initialOnboardingComplete}
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+          Download Spec
+        </button>
       </div>
       <div className='absolute top-5 right-5 z-50 flex gap-2'>
         <div className='flex flex-row gap-2'>
           <Tooltip
-            title={
-              !hasValidSourceToEndPath() && initialOnboardingComplete ? 'Create a valid graph to generate code' : ''
-            }
+            title={!hasValidSourceToEndPath() && initialOnboardingComplete ? 'Create a valid graph to generate code' : ''}
             placement='bottom'
             arrow
           >
@@ -1281,42 +1360,79 @@ export default function App() {
               onClick={hasValidSourceToEndPath() && initialOnboardingComplete ? handleGenerateCode : undefined}
               disabled={!hasValidSourceToEndPath() || !initialOnboardingComplete}
             >
-              <div className='text-[#333333] font-medium text-center text-slate-100'> {'Generate Code'}</div>
+              <div className='text-[#333333] font-medium text-center text-slate-100'>Generate Code</div>
             </button>
           </Tooltip>
-          <button
-            disabled={!initialOnboardingComplete}
-            className={`p-3 rounded-md shadow-lg border border-[#2F6868] text-[#2F6868] focus:outline-none ${
-              !initialOnboardingComplete ? 'cursor-not-allowed' : ''
-            }`}
-            aria-label='Open Configuration'
-            onClick={() => setIsConfigModalOpen(true)}
+
+          <Tooltip
+            title="Configure API Server URL"
+            placement='bottom'
+            arrow
           >
-            <svg
-              xmlns='http://www.w3.org/2000/svg'
-              width='24'
-              height='24'
-              viewBox='0 0 24 24'
-              fill='none'
-              stroke='currentColor'
-              strokeWidth='2'
-              strokeLinecap='round'
-              strokeLinejoin='round'
+            <button
+              disabled={!initialOnboardingComplete}
+              className={`p-3 rounded-md shadow-lg border border-[#2F6868] text-[#2F6868] focus:outline-none ${
+                !initialOnboardingComplete ? 'cursor-not-allowed' : ''
+              }`}
+              aria-label='Server Configuration'
+              onClick={() => setIsServerConfigModalOpen(true)}
             >
-              <circle cx='12' cy='12' r='3'></circle>
-              <path d='M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z'></path>
-            </svg>
-          </button>
-          <button
-            disabled={!initialOnboardingComplete}
-            className={`p-3 rounded-md shadow-lg border border-[#2F6868] text-[#2F6868] focus:outline-none ${
-              !initialOnboardingComplete ? 'cursor-not-allowed' : ''
-            }`}
-            aria-label='Toggle Information Panel'
-            onClick={() => setInfoPanelOpen(!infoPanelOpen)}
+              <div className="flex items-center gap-2">
+                <Settings className='h-6 w-6' />
+                <span className="text-sm">API</span>
+              </div>
+            </button>
+          </Tooltip>
+
+          <Tooltip
+            title="Configure Graph Settings"
+            placement='bottom'
+            arrow
           >
-            <Info className='h-6 w-6' />
-          </button>
+            <button
+              disabled={!initialOnboardingComplete}
+              className={`p-3 rounded-md shadow-lg border border-[#2F6868] text-[#2F6868] focus:outline-none ${
+                !initialOnboardingComplete ? 'cursor-not-allowed' : ''
+              }`}
+              aria-label='Graph Configuration'
+              onClick={() => setIsConfigModalOpen(true)}
+            >
+              <div className="flex items-center gap-2">
+                <svg
+                  xmlns='http://www.w3.org/2000/svg'
+                  width='24'
+                  height='24'
+                  viewBox='0 0 24 24'
+                  fill='none'
+                  stroke='currentColor'
+                  strokeWidth='2'
+                  strokeLinecap='round'
+                  strokeLinejoin='round'
+                >
+                  <circle cx='12' cy='12' r='3'></circle>
+                  <path d='M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z'></path>
+                </svg>
+                <span className="text-sm">Graph</span>
+              </div>
+            </button>
+          </Tooltip>
+
+          <Tooltip
+            title="Toggle Information Panel"
+            placement='bottom'
+            arrow
+          >
+            <button
+              disabled={!initialOnboardingComplete}
+              className={`p-3 rounded-md shadow-lg border border-[#2F6868] text-[#2F6868] focus:outline-none ${
+                !initialOnboardingComplete ? 'cursor-not-allowed' : ''
+              }`}
+              aria-label='Toggle Information Panel'
+              onClick={() => setInfoPanelOpen(!infoPanelOpen)}
+            >
+              <Info className='h-6 w-6' />
+            </button>
+          </Tooltip>
         </div>
       </div>
 
@@ -1533,7 +1649,7 @@ export default function App() {
                       <div className='flex py-3 md:py-0 flex-row gap-2'>
                         <button
                           onClick={downloadAsZip}
-                          className='px-3 py-1 bg-white rounded-lg border border-gray-300 hover:bg-gray-50'
+                          className='px-3 rounded-t-md bg-white rounded-b-md border border-gray-300 hover:bg-gray-50'
                           title='Download as ZIP'
                         >
                           <Download size={18} />
@@ -1628,7 +1744,20 @@ export default function App() {
           </MuiModal>
         </div>
       </div>
-      <ConfigModal />
+      <ConfigModal
+        isOpen={isServerConfigModalOpen}
+        onClose={() => setIsServerConfigModalOpen(false)}
+        title="Server Configuration"
+      >
+        <ServerConfigModalContent />
+      </ConfigModal>
+      <ConfigModal
+        isOpen={isConfigModalOpen}
+        onClose={() => setIsConfigModalOpen(false)}
+        title="Graph Configuration"
+      >
+        <GraphConfigModalContent />
+      </ConfigModal>
     </div>
   )
 }

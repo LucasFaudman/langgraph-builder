@@ -1,7 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 
-const LANGGRAPH_API_URL = 'https://langgraph-gen-server-570601939772.us-central1.run.app/generate'
-
 type GenerateResponse = {
   stub?: string
   implementation?: string
@@ -14,8 +12,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
   }
 
   try {
-    const { spec, language, format } = req.body
-    const response = await fetch(LANGGRAPH_API_URL, {
+    const { spec, language, format, serverUrl } = req.body
+    const response = await fetch(serverUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
