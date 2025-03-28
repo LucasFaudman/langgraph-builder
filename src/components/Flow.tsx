@@ -35,6 +35,19 @@ import {
   type OnboardingStep
 } from './onboarding'
 
+// Define template types for code generation
+type TemplateContentMap = {[name: string]: string};
+type LanguageTemplates = {
+  [templateType: string]: {
+    names: string[],
+    contentMap: TemplateContentMap
+  }
+};
+type AvailableTemplates = {
+  python: LanguageTemplates,
+  typescript: LanguageTemplates
+};
+
 // Loading spinner component
 const LoadingSpinner = () => (
   <div className='flex items-center justify-center'>
@@ -82,16 +95,14 @@ export default function App() {
     language: 'python' as 'python' | 'typescript'
   })
   const [skipTemplates, setSkipTemplates] = useState<string[]>([])
-  const [availableTemplates, setAvailableTemplates] = useState<{
-    python: { [key: string]: string[] },
-    typescript: { [key: string]: string[] }
-  }>({
+  const [availableTemplates, setAvailableTemplates] = useState<AvailableTemplates>({
     python: {},
     typescript: {}
   })
   const [isLoadingTemplates, setIsLoadingTemplates] = useState(false)
   const [templateError, setTemplateError] = useState<string | null>(null)
   const [customTemplates, setCustomTemplates] = useState<{[key: string]: string}>({})
+  const [currentTemplates, setCurrentTemplates] = useState<{[key: string]: string}>({})
 
   const nodesRef = useRef(nodes)
   const edgesRef = useRef(edges)
@@ -114,7 +125,9 @@ export default function App() {
       // Load custom templates
       const savedCustomTemplates = localStorage.getItem('lg-builder-custom-templates');
       if (savedCustomTemplates) {
-        setCustomTemplates(JSON.parse(savedCustomTemplates));
+        const parsedTemplates = JSON.parse(savedCustomTemplates);
+        setCustomTemplates(parsedTemplates);
+        setCurrentTemplates(parsedTemplates); // Also set as current templates
       }
 
       // Load language preference
@@ -210,26 +223,24 @@ export default function App() {
       }
       
       // Organize templates by language and template type
-      const templates: {
-        python: { [key: string]: string[] },
-        typescript: { [key: string]: string[] }
-      } = {
+      const templatesData: AvailableTemplates = {
         python: {},
         typescript: {}
       };
       
-      data.templates.forEach((template: { language: 'python' | 'typescript', template_type: string, name: string }) => {
-        const { language, template_type, name } = template;
-        if (!templates[language]) {
-          templates[language] = {};
+      data.templates.forEach((template: { language: 'python' | 'typescript', template_type: string, name: string, content: string }) => {
+        const { language, template_type, name, content } = template;
+        if (!templatesData[language]) {
+          templatesData[language] = {};
         }
-        if (!templates[language][template_type]) {
-          templates[language][template_type] = [];
+        if (!templatesData[language][template_type]) {
+          templatesData[language][template_type] = { names: [], contentMap: {} };
         }
-        templates[language][template_type].push(name);
+        templatesData[language][template_type].names.push(name);
+        templatesData[language][template_type].contentMap[name] = content;
       });
       
-      setAvailableTemplates(templates);
+      setAvailableTemplates(templatesData);
     } catch (error) {
       console.error('Error fetching templates:', error);
       setTemplateError(error instanceof Error ? error.message : 'Unknown error');
@@ -690,12 +701,13 @@ export default function App() {
     
     // Make sure the active file is available in the new language
     if (activeFile !== 'spec' && !generatedFiles[newLanguage]?.[activeFile]) {
-      // Current file isn't available, find the first available one
+      // Current file isn't available, find the first available one in the preferred order
       if (generatedYamlSpec) {
         setActiveFile('spec');
       } else {
-        const fileTypes = ['graph', 'stub', 'implementation', 'state', 'config'] as const;
-        for (const fileType of fileTypes) {
+        // Check each file type in the specified order and select the first one with content
+        const orderedFileTypes = ['graph', 'stub', 'implementation', 'state', 'config'] as const;
+        for (const fileType of orderedFileTypes) {
           if (generatedFiles[newLanguage]?.[fileType]) {
             setActiveFile(fileType);
             break;
@@ -732,7 +744,7 @@ export default function App() {
           format: 'yaml',
           serverUrl: generateEndpoint,
           skip: skipTemplates.length > 0 ? skipTemplates : null,
-          templates: customTemplates,
+          templates: currentTemplates,
           configValues: configValues,
         }),
       });
@@ -765,13 +777,13 @@ export default function App() {
         });
       }
       
-      // Set initial active file - prefer spec if it exists, otherwise pick the first available file
+      // Set initial active file - prefer spec if it exists, otherwise check files in the specified order
       if (generatedYamlSpec) {
         setActiveFile('spec');
       } else {
-        // Check each file type in order and select the first one with content
-        const fileTypes = ['stub', 'implementation', 'graph', 'state', 'config'] as const;
-        for (const fileType of fileTypes) {
+        // Check each file type in the specified order and select the first one with content
+        const orderedFileTypes = ['graph', 'stub', 'implementation', 'state', 'config'] as const;
+        for (const fileType of orderedFileTypes) {
           if (data[fileType]) {
             setActiveFile(fileType);
             break;
@@ -789,6 +801,75 @@ export default function App() {
   const handleGenerateCode = () => {
     generateCodeWithLanguage(configValues.language || 'python');
   }
+
+  // Handle template change for a specific file type
+  const handleTemplateChange = async (fileType: string, templateName: string) => {
+    // Save current active file
+    const prevActiveFile = activeFile;
+    
+    // Update current template selection
+    const updatedTemplates: {[key: string]: string} = { ...currentTemplates };
+    
+    if (templateName === 'default') {
+      // If 'default' is selected, remove the entry
+      delete updatedTemplates[fileType];
+    } else {
+      // Otherwise set the template name
+      updatedTemplates[fileType] = templateName;
+    }
+    
+    setCurrentTemplates(updatedTemplates);
+    
+    // Regenerate code with new template
+    setIsLoading(true);
+    
+    try {
+      const lang = configValues.language;
+      const spec = generateSpec(edges, nodes, configValues as YamlConfig, lang);
+      
+      const baseServerUrl = serverUrl.endsWith('/') 
+        ? serverUrl.substring(0, serverUrl.length - 1) 
+        : serverUrl;
+      const generateEndpoint = `${baseServerUrl}/generate`;
+      
+      const response = await fetch('/api/generate-code', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          spec: spec,
+          language: lang,
+          format: 'yaml',
+          serverUrl: generateEndpoint,
+          skip: skipTemplates.length > 0 ? skipTemplates : null,
+          templates: updatedTemplates,  // Use the updated templates
+          configValues: configValues,
+        }),
+      });
+      
+      const data = await response.json();
+      
+      // Update generated files
+      setGeneratedFiles(prev => ({
+        ...prev,
+        [lang]: {
+          stub: data.stub,
+          implementation: data.implementation,
+          graph: data.graph,
+          state: data.state,
+          config: data.config,
+        }
+      }));
+      
+      // Restore previous active file
+      setActiveFile(prevActiveFile);
+    } catch (error) {
+      console.error('Failed to regenerate code:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const activeCode = activeFile === 'spec' 
     ? generatedYamlSpec 
@@ -1363,7 +1444,27 @@ export default function App() {
                 <div className='flex flex-col'>
                   {!isLoading && (generatedFiles[configValues.language?.toLowerCase() as 'python' | 'typescript']?.stub || generatedFiles[configValues.language?.toLowerCase() as 'python' | 'typescript']?.implementation) && (
                     <div className='flex flex-row justify-between items-center'>
-                      <h2 className='md:text-lg font-medium'>Generated Code:</h2>
+                      <div className='flex items-center gap-3'>
+                        <h2 className='md:text-lg font-medium'>Generated Code:</h2>
+                        
+                        {/* Template selection dropdown - only show for non-spec files */}
+                        {activeFile !== 'spec' && availableTemplates[configValues.language] && availableTemplates[configValues.language][activeFile] && (
+                          <div className='flex items-center'>
+                            <select
+                              className='px-2 py-1 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#2F6868] focus:border-transparent'
+                              value={currentTemplates[activeFile] || 'default'}
+                              onChange={(e) => handleTemplateChange(activeFile, e.target.value)}
+                            >
+                              <option value="default">Default Template</option>
+                              {!templateError && 
+                               availableTemplates[configValues.language][activeFile]?.names?.length > 0 && 
+                               availableTemplates[configValues.language][activeFile].names.map(template => (
+                                <option key={template} value={template}>{template}</option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+                      </div>
                       <div className='flex py-3 md:py-0 flex-row gap-2'>
                         <button
                           onClick={() => downloadAsZip(generatedFiles, generatedYamlSpec, configValues.language || 'python')}
@@ -1394,6 +1495,8 @@ export default function App() {
                     {!isLoading && (generatedFiles[configValues.language?.toLowerCase() as 'python' | 'typescript']?.stub || generatedFiles[configValues.language?.toLowerCase() as 'python' | 'typescript']?.implementation) ? (
                       <div className='mt-3 md:w-[50vw] md:h-[80vh]'>
                         <div className='flex flex-wrap'>
+                          {/* Tabs in specific order: spec, graph, stub, implementation, others */}
+                          {/* spec tab */}
                           {generatedYamlSpec && (
                             <button
                               className={`px-3 rounded-t-md ${activeFile === 'spec' ? 'bg-[#246161] text-white' : 'bg-gray-200'}`}
@@ -1402,18 +1505,81 @@ export default function App() {
                               spec.yml
                             </button>
                           )}
-                          {/* Use loop to render file type tabs */}
-                          {(['stub', 'implementation', 'graph', 'state', 'config'] as const).map((fileType) => 
-                            generatedFiles[configValues.language?.toLowerCase() as 'python' | 'typescript']?.[fileType] && (
+                          
+                          {/* graph tab */}
+                          {generatedFiles[configValues.language?.toLowerCase() as 'python' | 'typescript']?.graph && (
                             <button
-                                key={fileType}
-                                className={`px-3 rounded-t-md ${fileType === 'stub' ? 'py-1' : ''} ${activeFile === fileType ? 'bg-[#246161] text-white' : 'bg-gray-200'}`}
-                                onClick={() => setActiveFile(fileType)}
+                              key="graph"
+                              className={`px-3 rounded-t-md ${activeFile === 'graph' ? 'bg-[#246161] text-white' : 'bg-gray-200'}`}
+                              onClick={() => setActiveFile('graph')}
                             >
-                                {`${fileType}${fileExtension}`}
+                              {`graph${fileExtension}`}
                             </button>
-                            )
                           )}
+                          
+                          {/* stub tab */}
+                          {generatedFiles[configValues.language?.toLowerCase() as 'python' | 'typescript']?.stub && (
+                            <button
+                              key="stub"
+                              className={`px-3 rounded-t-md ${activeFile === 'stub' ? 'bg-[#246161] text-white' : 'bg-gray-200'}`}
+                              onClick={() => setActiveFile('stub')}
+                            >
+                              {`stub${fileExtension}`}
+                            </button>
+                          )}
+                          
+                          {/* implementation tab */}
+                          {generatedFiles[configValues.language?.toLowerCase() as 'python' | 'typescript']?.implementation && (
+                            <button
+                              key="implementation"
+                              className={`px-3 rounded-t-md ${activeFile === 'implementation' ? 'bg-[#246161] text-white' : 'bg-gray-200'}`}
+                              onClick={() => setActiveFile('implementation')}
+                            >
+                              {`implementation${fileExtension}`}
+                            </button>
+                          )}
+                          
+                          {/* state tab */}
+                          {generatedFiles[configValues.language?.toLowerCase() as 'python' | 'typescript']?.state && (
+                            <button
+                              key="state"
+                              className={`px-3 rounded-t-md ${activeFile === 'state' ? 'bg-[#246161] text-white' : 'bg-gray-200'}`}
+                              onClick={() => setActiveFile('state')}
+                            >
+                              {`state${fileExtension}`}
+                            </button>
+                          )}
+                          
+                          {/* config tab */}
+                          {generatedFiles[configValues.language?.toLowerCase() as 'python' | 'typescript']?.config && (
+                            <button
+                              key="config"
+                              className={`px-3 rounded-t-md ${activeFile === 'config' ? 'bg-[#246161] text-white' : 'bg-gray-200'}`}
+                              onClick={() => setActiveFile('config')}
+                            >
+                              {`config${fileExtension}`}
+                            </button>
+                          )}
+                          
+                          {/* Any other file types not explicitly handled above */}
+                          {Object.keys(generatedFiles[configValues.language?.toLowerCase() as 'python' | 'typescript'] || {})
+                            .filter(fileType => 
+                              fileType !== 'spec' && 
+                              fileType !== 'graph' && 
+                              fileType !== 'stub' && 
+                              fileType !== 'implementation' && 
+                              fileType !== 'state' && 
+                              fileType !== 'config')
+                            .map(fileType => (
+                              <button
+                                key={fileType}
+                                className={`px-3 rounded-t-md ${activeFile === fileType ? 'bg-[#246161] text-white' : 'bg-gray-200'}`}
+                                onClick={() => setActiveFile(fileType as any)}
+                              >
+                                {`${fileType}${fileExtension}`}
+                              </button>
+                            ))
+                          }
                         </div>
                         <div className='relative bg-gray-100 overflow-hidden h-[calc(80vh-30px)]'>
                           <div className='absolute top-5 right-6 z-10 flex gap-2'>
@@ -1492,12 +1658,15 @@ export default function App() {
           skipTemplates={skipTemplates}
           availableTemplates={availableTemplates}
           configValues={configValues}
-          customTemplates={customTemplates}
+          customTemplates={currentTemplates}
           isLoadingTemplates={isLoadingTemplates}
           templateError={templateError}
           onSave={({ skipTemplates: newSkip, customTemplates: newCustomTemplates, language: newLanguage }) => {
             updateSkipTemplates(newSkip);
+            
+            // Update both template states
             updateCustomTemplates(newCustomTemplates);
+            setCurrentTemplates(newCustomTemplates);
             
             // If language has changed, update it in configValues and potentially regenerate code
             if (newLanguage !== configValues.language) {

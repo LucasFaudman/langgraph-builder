@@ -1,13 +1,23 @@
 import { useState, useEffect } from 'react'
 import { Highlight, themes } from 'prism-react-renderer'
 
+// Define template types for code generation
+type TemplateContentMap = {[name: string]: string};
+type LanguageTemplates = {
+  [templateType: string]: {
+    names: string[],
+    contentMap: TemplateContentMap
+  }
+};
+type AvailableTemplates = {
+  python: LanguageTemplates,
+  typescript: LanguageTemplates
+};
+
 type CodeTemplateConfigProps = {
   onlyTemplates: string[];
   skipTemplates: string[];
-  availableTemplates: {
-    python: { [key: string]: string[] },
-    typescript: { [key: string]: string[] }
-  };
+  availableTemplates: AvailableTemplates;
   configValues: {
     name: string;
     builder_name: string;
@@ -111,17 +121,46 @@ export default function CodeTemplateConfig({
   
   // Set template preview when selected template changes
   useEffect(() => {
-    if (selectedTemplateType && selectedTemplate && selectedTemplate !== 'default' && selectedTemplate !== 'disabled') {
-      // For now, just show placeholder template as preview
-      // In a real implementation, you would fetch the actual template content from the API
-      setTemplatePreview(
-        PLACEHOLDER_TEMPLATES[language][selectedTemplateType as keyof typeof PLACEHOLDER_TEMPLATES[typeof language]] || 
-        '// Template preview not available'
-      );
+    if (selectedTemplateType) {
+      if (selectedTemplate !== 'disabled') {
+        // Get the actual template content
+        if (availableTemplates[language] && 
+            availableTemplates[language][selectedTemplateType]) {
+          
+          // For "Default" option, use the "default.j2" template if available
+          if (selectedTemplate === 'default' && 
+              availableTemplates[language][selectedTemplateType].contentMap && 
+              availableTemplates[language][selectedTemplateType].contentMap['default.j2']) {
+            setTemplatePreview(availableTemplates[language][selectedTemplateType].contentMap['default.j2']);
+          } 
+          // For custom template selection, use the selected template's content
+          else if (selectedTemplate !== 'default' && 
+                  availableTemplates[language][selectedTemplateType].contentMap && 
+                  availableTemplates[language][selectedTemplateType].contentMap[selectedTemplate]) {
+            setTemplatePreview(availableTemplates[language][selectedTemplateType].contentMap[selectedTemplate]);
+          } 
+          // Fallback to placeholder if template content is not available
+          else {
+            setTemplatePreview(
+              PLACEHOLDER_TEMPLATES[language][selectedTemplateType as keyof typeof PLACEHOLDER_TEMPLATES[typeof language]] || 
+              '// Template preview not available'
+            );
+          }
+        } else {
+          // Fallback to placeholder
+          setTemplatePreview(
+            PLACEHOLDER_TEMPLATES[language][selectedTemplateType as keyof typeof PLACEHOLDER_TEMPLATES[typeof language]] || 
+            '// Template preview not available'
+          );
+        }
+      } else {
+        // For disabled option, clear the preview
+        setTemplatePreview('');
+      }
     } else {
       setTemplatePreview('');
     }
-  }, [selectedTemplateType, selectedTemplate, language]);
+  }, [selectedTemplateType, selectedTemplate, language, availableTemplates]);
 
   // Save changes and close modal
   const handleClose = () => {
@@ -175,7 +214,7 @@ export default function CodeTemplateConfig({
   // Get templates for the selected type
   const getTemplatesForType = (type: string) => {
     const currentLang = language;
-    return availableTemplates[currentLang]?.[type] || [];
+    return availableTemplates[currentLang]?.[type]?.names || [];
   };
 
   // Handle template type selection
@@ -293,8 +332,8 @@ export default function CodeTemplateConfig({
                   <option value="disabled">Disabled</option>
                   {selectedTemplateType && 
                    !templateError && 
-                   availableTemplates[language]?.[selectedTemplateType]?.length > 0 && 
-                   availableTemplates[language][selectedTemplateType].map(template => (
+                   availableTemplates[language]?.[selectedTemplateType]?.names?.length > 0 && 
+                   availableTemplates[language][selectedTemplateType].names.map(template => (
                      <option key={template} value={template}>{template}</option>
                    ))
                   }
@@ -312,9 +351,12 @@ export default function CodeTemplateConfig({
             )}
             
             {/* Template Preview */}
-            {selectedTemplateType && selectedTemplate !== 'default' && selectedTemplate !== 'disabled' && templatePreview && (
+            {selectedTemplateType && selectedTemplate !== 'disabled' && templatePreview && (
               <div className="mt-3">
-                <label className='text-sm font-medium text-gray-700'>Template Preview: {selectedTemplateType}{fileExtension}</label>
+                <label className='text-sm font-medium text-gray-700'>
+                  Template Preview: {selectedTemplateType}{fileExtension}
+                  {selectedTemplate === 'default' ? ' (Default)' : ` (${selectedTemplate})`}
+                </label>
                 <div className='mt-1 border border-gray-300 rounded-md overflow-hidden'>
                   <Highlight
                     theme={themes.nightOwl}
@@ -389,6 +431,7 @@ export default function CodeTemplateConfig({
         <p className='text-xs text-gray-600'>
           Select a template type and choose "Disabled" to skip generating that file type.
           Select a custom template to use a specific template for that file type.
+          The "Default" option uses the server's default template (typically 'default.j2').
           {templateError ? " Only stub and implementation template types are available when templates can't be loaded." : ""}
         </p>
       </div>
