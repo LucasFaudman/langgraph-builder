@@ -634,12 +634,13 @@ export default function App() {
           y: event.clientY - reactFlowBounds.top,
         })
 
+        const newNodeLabel = `Node ${maxNodeLength + 1}`
         const newNode: CustomNodeType = {
           id: `node-${maxNodeLength + 1}`,
           type: 'custom',
           position,
           selected: true,
-          data: { label: `Node ${maxNodeLength + 1}` },
+          data: { label: newNodeLabel },
         }
         setMaxNodeLength(maxNodeLength + 1)
 
@@ -1175,45 +1176,63 @@ export default function App() {
                   { id: 'end', type: 'end', position: { x: 0, y: 600 }, data: { label: 'end' } },
                   // Add custom nodes
                   ...parsed.nodes.map((node, index) => ({
-                    id: `node-${index}`,
+                    id: `node-${index + 1}`, // Use consistent ID format
                     type: 'custom',
-                    position: { x: 200, y: 200 + (index * 100) },
+                    position: { x: 200, y: 200 + (Math.random() * 400) },
                     data: { label: node.name }
                   }))
                 ];
+
+                // Update maxNodeLength based on the number of loaded nodes
+                setMaxNodeLength(parsed.nodes.length);
 
                 // Create edges from the YAML
                 const newEdges = parsed.edges.map((edge, index) => {
                   if ('condition' in edge && edge.paths) {
                     // Handle conditional edges
-                    return edge.paths.map((path, pathIndex) => ({
-                      id: `edge-${index}-${pathIndex}`,
-                      source: edge.from === '__start__' ? 'source' : 
-                              edge.from === '__end__' ? 'end' : 
-                              newNodes.find(n => n.data.label === edge.from)?.id || '',
-                      target: path === '__start__' ? 'source' : 
-                              path === '__end__' ? 'end' : 
-                              newNodes.find(n => n.data.label === path)?.id || '',
-                      animated: true,
-                      type: 'self-connecting-edge',
-                      label: edge.condition,
-                      markerEnd: { type: MarkerType.ArrowClosed }
-                    }));
+                    return edge.paths.map((path, pathIndex) => {
+                      const sourceNode = newNodes.find(n => n.data.label === edge.from);
+                      const targetNode = newNodes.find(n => n.data.label === path);
+                      const sourceId = edge.from === '__start__' ? 'source' : 
+                                     edge.from === '__end__' ? 'end' : 
+                                     sourceNode?.id || '';
+                      const targetId = path === '__start__' ? 'source' : 
+                                     path === '__end__' ? 'end' : 
+                                     targetNode?.id || 'end';
+                      return {
+                        id: `${sourceId}->${targetId}-${pathIndex}`,
+                        source: sourceId,
+                        target: targetId,
+                        animated: true,
+                        type: 'self-connecting-edge',
+                        label: edge.condition,
+                        markerEnd: { type: MarkerType.ArrowClosed },
+                        data: { onEdgeUnselect: handleEdgeUnselect }
+                      };
+                    });
                   } else {
                     // Handle normal edges
+                    const sourceNode = newNodes.find(n => n.data.label === edge.from);
+                    const targetNode = newNodes.find(n => n.data.label === edge.to);
+                    const sourceId = edge.from === '__start__' ? 'source' : 
+                                   edge.from === '__end__' ? 'end' : 
+                                   sourceNode?.id || '';
+                    const targetId = edge.to === '__start__' ? 'source' : 
+                                   edge.to === '__end__' ? 'end' : 
+                                   targetNode?.id || 'end';
                     return {
-                      id: `edge-${index}`,
-                      source: edge.from === '__start__' ? 'source' : 
-                              edge.from === '__end__' ? 'end' : 
-                              newNodes.find(n => n.data.label === edge.from)?.id || '',
-                      target: edge.to === '__start__' ? 'source' : 
-                              edge.to === '__end__' ? 'end' : 
-                              newNodes.find(n => n.data.label === edge.to)?.id || '',
+                      id: `${sourceId}->${targetId}`,
+                      source: sourceId,
+                      target: targetId,
                       type: 'self-connecting-edge',
-                      markerEnd: { type: MarkerType.ArrowClosed }
+                      markerEnd: { type: MarkerType.ArrowClosed },
+                      data: { onEdgeUnselect: handleEdgeUnselect }
                     };
                   }
                 }).flat();
+
+                // Update maxEdgeLength based on the number of loaded edges
+                setMaxEdgeLength(newEdges.length);
 
                 // Update the graph
                 setNodes(newNodes);
