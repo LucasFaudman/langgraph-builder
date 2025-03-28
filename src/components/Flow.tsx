@@ -1227,13 +1227,24 @@ export default function App() {
                   // Add source and end nodes
                   { id: 'source', type: 'source', position: { x: 0, y: 0 }, data: { label: 'source' } },
                   { id: 'end', type: 'end', position: { x: 0, y: 600 }, data: { label: 'end' } },
-                  // Add custom nodes
-                  ...parsed.nodes.map((node, index) => ({
-                    id: `node-${index + 1}`, // Use consistent ID format
-                    type: 'custom',
-                    position: { x: 200, y: 200 + (Math.random() * 400) },
-                    data: { label: node.name }
-                  }))
+                  // Add custom nodes with evenly spaced positions
+                  ...parsed.nodes.map((node, index) => {
+                    // Calculate vertical spacing between nodes
+                    const totalHeight = 500; // Height between source and end nodes
+                    const numNodes = parsed.nodes.length;
+                    const spacing = totalHeight / (numNodes + 1);
+                    const yPosition = spacing * (index + 1) + 50; // Add 50px offset from source node
+                    
+                    // Alternate between left and right side for better visualization
+                    const xOffset = index % 2 === 0 ? -200 : 200;
+                    
+                    return {
+                      id: `node-${index + 1}`, // Use consistent ID format
+                      type: 'custom',
+                      position: { x: xOffset, y: yPosition },
+                      data: { label: node.name }
+                    };
+                  })
                 ];
 
                 // Update maxNodeLength based on the number of loaded nodes
